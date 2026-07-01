@@ -472,9 +472,12 @@ hands, and text widgets). Both transfer over the data channel via the init → c
 > **What actually works (✅ validated live):** building a **photo dial from any image** and installing
 > it; installing any of the **103 store dials** offline; **reskinning** a structured dial (swap the
 > background or any non-background sprite) and **moving** its layers; **reordering / switching** the
-> active face. **🟡 probable / not yet built:** a **100 %-synthetic** structured dial from scratch —
-> every field is decoded; the only missing piece is a builder that emits the `0x20` scene envelope
-> (§11.7). There is **no codec or transport barrier and no need for the vendor toolchain.** The old
+> active face; and **building a structured dial from scratch** — the `0x20` scene envelope is
+> decoded and the builder is implemented (§11.7), proven **offline** to round-trip all 103 store
+> dials byte-for-byte and to emit synthetic containers that pass the firmware's own validator. **🟡
+> the only unproven step** is watching a from-scratch synthetic render **on-device** over `9075`
+> (structural offline proof already covers what used to cause the `0a` reject). There is **no codec
+> or transport barrier and no need for the vendor toolchain.** The old
 > "structured render is RES-pack-baked / impossible over BLE" and "cf=0x1f server-side codec" claims
 > were **wrong** (an offset+bytes-per-pixel bug) — the firmware renders structured dials **data-driven
 > from the file you send**.
@@ -628,29 +631,48 @@ with `61 [01|0a] 00` + `u32 asset_ptr` (absolute file offset of the asset).
 | Install any of 103 store dials | ✅ **done** | §11.4; `9075`, `old_id`=active |
 | Reskin cf=4 background of a store dial | ✅ **works live** | swap FULL payload in place, set the asset `len` to the **new** block size (≤ old), keep the same file footprint, fresh-install |
 | Re-author by templating (swap any layer's pixels + move geometry) | ✅ **renders via BLE** | dial 373: bg→cyan + a cf=5 sprite→red + moved X 224→100, all rendered, hands live |
-| 100 %-synthetic structured dial from scratch | 🟡 **probable** | all fields known; needs a `.wfdl` builder that emits the `0x20` scene envelope (§11.7) |
-| System fonts (`.font`) | ✅ decode/render | LVGL bin (not proprietary); 32 number fonts render; 25 text fonts use LVGL RLE (pending) |
+| 100 %-synthetic structured dial from scratch | ✅ **builder done, offline-validated** | `0x20` envelope builder in `watchface_struct.rs` (`build_container`/`serialize`/`validate_container`); round-trips all 103 dials byte-exact + synthetic passes firmware validator (§11.7). 🟡 on-device render over `9075` not yet filmed |
+| System fonts (`.font`) | ✅ **decode/render (all)** | LVGL bin (not proprietary); 32 number fonts (`num*/nm*`, uncompressed) + 24 text fonts (`font*`, LVGL RLE `comp=1`) all decode — 12208 glyphs, 0 overruns, full ASCII. RLE = LVGL v8.3 `lv_font_fmt_txt.c` (3-state SINGLE/REPEATE/COUNTER + per-row XOR prefilter), ported 1:1, no disasm |
 
 ⚠️ Reskin/re-author pitfalls that cause a black screen or `0a`: leaving the **old asset `len`** (the
 watch reads past the block → overrun → black); **growing the file** (rejected at install); reusing an
 id **in place** instead of a fresh install.
 
-### 11.7 The `0x20` scene envelope (needed only for from-scratch) 🔎
+### 11.7 The `0x20` scene envelope — decoded & builder implemented ✅
 
 A re-authored **real** dial renders because it preserves the file's scene envelope. A purely synthetic
 body of flat `61 …` records is **rejected** — the firmware parser (`WFManager_Parser`, `0xdb35c`)
-requires the body (from offset `0x24`) to start with a `0x20` scene container:
+requires the body (from offset `0x24`) to start with a `0x20` scene container. The full file is:
 
 ```
-20 <u16 L0> 21 <u16 L1> 86 40 00 <name NUL-pad> <children…>
+[0x00,0x24)  header:  perDialId@0 · version=1@4 · name[16]@8 · size_a@0x18 · size_b@0x1c · idWord0@0x20
+[0x24, fa)   scene:   20 <u16 L0> ( 21 <u16 L1> ( 86 <len>=name , 30/70/80/81… drawables ) [ 22 … AOD ] )
+[fa, EOF)    assets:  [dimsWord u32][len u32][payload = 1f 00 01 00 + LZ4] …
+   size_a = filesize−36 · size_b = filesize−36−first_asset · 0x27+L0 == first_asset
 ```
 
-`L0` = size of the children block; each child (groups `0x68`, records `0x61`/pointers) is **nested
-with its own `u16` length at `+1`**, and every child's `offset+len` must fit inside its parent's
-window. First body byte ≠ `0x20` → parser error −16; a child overrunning its window → −2; either makes
-the `9065` handler write finish `0a`. Free composition is therefore **possible** given a builder that
-emits this envelope with correct nested lengths. (Reference impl for parsing/rendering:
-`core-rust/watchface_struct.rs`; builder experiments: `wfeditor`.)
+The scene is a **clean nested TLV** — `[tag u8][len u16 LE][body]`, container tags `0x20/0x21/0x22/0x68`
+recursing, leaf drawables `0x30` (static) / `0x70` (element/pointer) / `0x80` / `0x81` / `0x86` (name).
+(The flat `61 01 00` / `61 0a 00` records are patterns that live **inside** the drawable bodies; the
+old parser found them heuristically.) Every child's `offset+len` must fit inside its parent's window;
+first body byte ≠ `0x20` → parser error −16; a child overrunning its window → −2; either makes the
+`9065` handler (`0xeb50c`) write finish `0a`.
+
+**Builder is implemented and offline-validated** (`core-rust/watchface_struct.rs`:
+`SceneNode` / `serialize` / `parse_scene` / `validate_container` / `build_container` /
+`build_container_raw`; CLI `cmfwatch-wfgen reframe`):
+
+- `scene_roundtrip_identity` — all **103 store dials**: `parse_scene`→`serialize` reproduces the scene
+  **byte-for-byte** (recomputed nested `len`s match) and `validate_container` passes on every one.
+- `build_reframe_identity` / CLI `reframe` — reassembling the **whole `.bin` from scratch** reproduces
+  the file byte-for-byte **except 1 name-padding byte** (`@0x17`; not a checksum).
+- `build_container_synthetic` — composes a **new** dial (background + drawable nested in `20→21`) that
+  passes the firmware's exact invariant (`build_container` emits correct nested windows).
+- `validate_rejects_bad_containers` — rejects a flat `0x61` body (→ `NotEnvelope`, the historic `0a`
+  bug) and a child that overruns its window (→ `ChildOverflow`).
+
+**🟡 Still unproven (needs the watch, non-blocking):** uploading a from-scratch synthetic over `9075`
+and watching it render — the offline structural proof already covers what caused the `0a` reject.
 
 ---
 

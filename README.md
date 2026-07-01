@@ -408,12 +408,14 @@ matching the firmware's `s.encode()[:max]` behavior); short fields are zero-padd
   `secondsOfDay(i32) ‖ index(u8) ‖ enabled(u8) ‖ repetition-bitmask(u8) ‖ flag(u8) ‖ label[32] UTF-8`.
   The **label is at offset 8** and shows on the watch. `repetition` = weekday bitmask (0 = one-time);
   `flag` is ⚠️ [uncertain] (one-time marker?). Example (13:30, idx 2): `0000bdd8 02 01 15 00 "Alarm…"`.
-- **GOALS_SET** (`005E 0001`) 🔎✅ — **corrects Gadgetbridge** (the 10-byte form is ACKed but
-  *ignored* by firmware). **29 bytes, integers big-endian**:
-  `flag(u16 LE = 0x0001) ‖ steps(u32 BE) ‖ distance_m(u32 BE) ‖ calories_kcal(u32 BE) ‖
-  sleep_min(u32 BE) ‖ exercise_min(u32 BE) ‖ stand_h(u8) ‖ 6× enable-flag(u8)`.
-  Accepted ranges (firmware **rejects the whole command** if any field is out of range):
-  steps 2000–30000, dist 1000–99000, cal 100–5000, sleep 360–720, exercise 30–90, stand 6–16.
+- **GOALS_SET** (`005E 0001`) ✅ — the official app and the reference implementation use the
+  **10-byte, big-endian** `DailyTargetBean` v1: `steps(u32 BE) ‖ distance_m(u32 BE) ‖
+  calories_kcal(u16 BE)`. (This is the Gadgetbridge form; earlier reports that the watch "ignored"
+  it were a stale-session decrypt bug, not a payload problem.) 🔎 Firmware RE also shows a longer
+  **29-byte extended** variant (adds `sleep_min`/`exercise_min`/`stand_h` + 6 enable flags, all u32
+  BE after a `flag(u16 LE)` prefix, with ranges enforced: steps 2000–30000, dist 1000–99000, cal
+  100–5000, sleep 360–720, exercise 30–90, stand 6–16) — not the app's default path; prefer the
+  10-byte form unless you need the extra targets.
 - **STANDING_REMINDER / WATER_REMINDER** (`0060`/`0061 0001`) ✅: **11 bytes**:
   `enabled(1) ‖ threshold_min(u16 LE) ‖ dndStart(u32 LE) ‖ dndEnd(u32 LE)`. Note the "active window
   08:00–22:00" shown in the UI is a **fixed firmware default** and is **not** carried in the payload.
@@ -461,10 +463,21 @@ matching the firmware's `s.encode()[:max]` behavior); short fields are zero-padd
 
 ---
 
-## 11. Watch faces / dials
+## 11. Watch faces / dials — authoring
 
-The watch supports (a) **photo/custom dials** and (b) **built-in / store "structured" dials**. Both
-transfer over the data channel via the init → chunk loop in §6.
+The watch supports (a) **photo/custom dials** (a background image + a firmware-drawn digital clock)
+and (b) **structured dials** (built-in / store faces: a background plus positioned sprite layers,
+hands, and text widgets). Both transfer over the data channel via the init → chunk loop in §6.
+
+> **What actually works (✅ validated live):** building a **photo dial from any image** and installing
+> it; installing any of the **103 store dials** offline; **reskinning** a structured dial (swap the
+> background or any non-background sprite) and **moving** its layers; **reordering / switching** the
+> active face. **🟡 probable / not yet built:** a **100 %-synthetic** structured dial from scratch —
+> every field is decoded; the only missing piece is a builder that emits the `0x20` scene envelope
+> (§11.7). There is **no codec or transport barrier and no need for the vendor toolchain.** The old
+> "structured render is RES-pack-baked / impossible over BLE" and "cf=0x1f server-side codec" claims
+> were **wrong** (an offset+bytes-per-pixel bug) — the firmware renders structured dials **data-driven
+> from the file you send**.
 
 ### 11.1 Dial management — `DIAL_COMMAND (9055 / a055)` ✅
 
@@ -472,64 +485,172 @@ transfer over the data channel via the init → chunk loop in §6.
   N × dialId(u32 LE) ‖ ffffffff`. Example: `01 05 06 07 …` = active #5, 6 dials, max 7.
 - **type 1** = reorder / select active: resend the whole list with the target dial at index 0
   (this is how the official app switches faces; there is no dedicated "set active" opcode).
+- **Delete a dial** = resend the list **without** its id.
 - `CHANGE_DIAL (009F 0001)` is **inert** on fw 1.0.0.73 (returns a constant, doesn't switch) — do not
   use it.
 
 ### 11.2 Transfer flow ✅
 
 ```
-INIT1 8052 → 0052
-INIT2  9063 (photo)  |  9075 (structured / switch)  → A063 / A075
-[ watch → DATA_CHUNK_REQUEST A064 (offset, length; u32 BE)
+INIT1 8052 (payload A5) → 0052 [0]=01
+INIT2  9063 (photo, APPEND)  |  9075 (structured, REPLACE)  → A063 / A075 [0]=01
+[ watch → DATA_CHUNK_REQUEST A064 (offset, length; u32 BE, +progress u8)
   phone → DATA_CHUNK_WRITE   9064 (bytes[offset..offset+length], plaintext) ] × N
-FINISH A065 → 9065
+FINISH A065 → 9065 (payload A5)
 ```
 
-The finish reply byte: `01` = dial activated & saved; `0a` = dial stored but not activated (e.g. a
-new store dial that isn't the active face). The custom-dial `watchfaceId` sentinel is `0xFFFFFFFF`.
+Finish reply byte: `01` = activated & saved; `0a` = stored but **not** activated / rejected. On
+Android each `DATA_CHUNK_WRITE` must go out as **one BLE write per frame** — concatenating and
+re-slicing by MTU desyncs the headers and the watch loops asking for offset 0.
 
-### 11.3 Photo / custom dial container ✅ (byte-verified round-trip)
+- **`9063` (photo) = APPEND.** The dial list grows (6→7); `watchfaceId = 0xFFFFFFFF` (custom
+  sentinel) so it is never rejected as a duplicate, and the watch auto-activates it.
+- **`9075` (structured) = REPLACE** the `old_id` slot. `old_id` **must** already be in the list
+  (otherwise `0a`). To re-install an id already present, **delete it first** (9055 list-minus-id)
+  then upload "fresh" — reusing an id in place gives `0a`.
+
+### 11.3 Photo / custom dial — ✅ fully validated end-to-end
+
+**Container** (byte-verified round-trip; all fields little-endian):
 
 ```
 0x00  magic     6c 8d c4 a5
-0x04  count     0x12 (18)     [constant]
-0x10  lenA      u32 LE
-0x14  FULL block  tag 04 48 47 3a → 466×466 ‖ LZ4(RGB565-LE)   [434312 B raw]
-      THUMB block tag 04 38 c4 21 → 270×270 ‖ LZ4(RGB565-LE)   [145800 B raw]
-EOF-4 magic     6c 8d c4 a5     [trailer]
+0x04  count     12 00 00 00   (=18)  [constant, NOT an element count]
+0x08  00 × 8
+0x10  lenFull   u32 LE        (length of the whole FULL block: tag+len+payload)
+0x14  FULL  tag 04 48 47 3a ‖ payloadLen(u32 LE) ‖ LZ4(RGB565-LE)   → 466×466  [raw 434312 B]
+      THUMB tag 04 38 c4 21 ‖ payloadLen(u32 LE) ‖ LZ4(RGB565-LE)   → 270×270  [raw 145800 B]
+EOF-4 magic     6c 8d c4 a5   [trailer = magic repeated]
 ```
 
-Codec = LZ4 (HC) over RGB565 little-endian, top-down, with the 21-byte LZ4-block header/footer
-stripped. Pixels outside the inscribed circle (center 233,233, radius 233) are zeroed. The digital
-clock overlay is chosen by `styleId` 0–4 (position/color carried in the INIT). Reference codec:
-`cmftool/tools/wf_codec.py`.
+Codec = **standard LZ4 block over RGB565 little-endian, top-down** (`payloadLen` counts from the
+first LZ4 byte). The official app uses LZ4-HC and strips the 21-byte LZ4-block header/footer; a plain
+literals-only LZ4 encoder also works — the watch accepts any valid LZ4, byte-identity is not
+required. Pixels outside the inscribed circle (center 233,233, radius 233) are set to `0x0000`.
 
-### 11.4 Structured / store dial container ✅ (format known)
+**INIT_2 for `9063` — exact header (✅ this is the one that works):**
 
 ```
-0x00  perDialId  u32 LE     [per-dial; e.g. Ring Data = 0xb0b04fc0]
+01 ‖ size(u32 BE) ‖ FF FF FF FF ‖ 01 01 01 ‖ styleId(u16 BE) ‖ posX(u16 BE) ‖ posY(u16 BE) ‖
+   color565(u16 BE) ‖ FF × 8
+```
+
+`size` = exact `.bin` length; `FFFFFFFF` = custom `watchfaceId`; `styleId` 0–4 selects the built-in
+digital-clock layout (it is always drawn — there is no "off"); `posX/posY` position it (known-good
+56 / 77); `color565` tints it (e.g. `FFFF` = white). ⚠️ The shorter `A5 ‖ size ‖ watchfaceId` form is
+**rejected** with finish `0a` — use the full header above. (Reference impl:
+`core-rust/engine.rs::build_wf_init2`, mirroring `C6135t.m31104u` in the official app.)
+
+**Recipe:** resize the image to 466×466 (and a 270×270 thumb), convert to RGB565-LE top-down,
+optionally zero the out-of-circle pixels, LZ4-compress each, assemble the container above, and upload
+via the `9063` pipeline with `watchfaceId = 0xFFFFFFFF`. (Reference codec: `core-rust/watchface.rs`,
+`work/codec_dfa.py`.)
+
+### 11.4 Structured / store dial — container & codecs ✅
+
+**Header** (identical across all 103 store dials; all fields little-endian):
+
+```
+0x00  perDialId  u32 LE     [per-dial id/hash; NOT a content checksum — 4 "Default" dials share one]
 0x04  version    0x00000001 [constant]
-0x08  name       char[16]
-0x18  size_a     u32 LE     [= filesize − 36]
-0x1c  size_b     u32 LE
-0x20  3× u32 LE  [purpose ⚠️ unclear; not a CRC]
-~0x60 directory of layer records (61 xx 00) + asset pool
+0x08  name       char[]     [NUL-terminated, e.g. "SlopeTime", "Metaball"]
+0x18  size_a     u32 LE     [= filesize − 36]   ✅ 100 % confirmed across 103 dials
+0x1c  size_b     u32 LE     [data-section length, < size_a]
+0x20  3× u32 LE  id/hash words [not a CRC]
+0x2c  name       (repeated on larger dials)
+~0x60 directory of layer records (61 xx 00 …) then the asset pool
 ```
 
-Each asset = `dimsWord(u32 LE) ‖ len(u32 LE) ‖ LZ4(payload)`, with
-`dimsWord = (h & 0x7FF) << 21 | (w & 0x7FF) << 10 | cf` and colour format
-`cf ∈ {4 = RGB565, 5 = RGB565+alpha (3 B/px), 13 = 4-bit alpha atlas, 1 = JPEG, 24 = RGBA8888}`.
+There is **no blocking checksum** (CRC32/Adler32/byte-sum all fail to match) — repacking is not
+gated. Stub dials (~173 B, e.g. ids 273/274/277) are placeholders for faces baked into ROM: header +
+directory, no real assets.
 
-### 11.5 Limits (✅)
+**Assets** — each is `dimsWord(u32 LE) ‖ len(u32 LE) ‖ LZ4(payload)`, where
+`cf = dimsWord & 0x1f`, `w = (dimsWord >> 10) & 0x7FF`, `h = (dimsWord >> 21) & 0x7FF`, and `len`
+counts from the first LZ4 byte (the `1f 00 01 00` you often see there is the first LZ4 token — **do
+not** skip it). Decompressed size = `w·h·bpp`:
 
-Authoring a **structured/analog dial from scratch is not possible over BLE**: hands, tick-marks and
-digit glyphs render from the firmware-baked `bt_watch.res` RES pack (an XIP, read-only partition).
-Installing a dial whose assets aren't in that pack yields finish byte `0a` (stored, not rendered).
-What **does** work offline: photo/custom dials, **reskins** of existing structured dials (fill-only —
-some anti-aliased sprites don't round-trip), and reorder/switch. 🔎 A second "WFM digital" render
-path in the firmware reads glyphs directly from the sent file (JPEG cf=1 or LZ4 RGB565), which would
-allow a from-scratch digital dial, but it is **unvalidated live** (the only real sample we have is
-corrupted).
+| cf | bpp | raster (after LZ4) | use |
+|----|-----|--------------------|-----|
+| 4 | 2 | RGB565-LE | opaque background (FULL/THUMB) |
+| 5 | 3 | RGB565-LE (2 B) + alpha (1 B) per px | anti-aliased sprites (glyphs, hands, icons) |
+| 13 (0x0d) | 0.5 | 4-bit alpha mask; firmware tints at runtime | digit-glyph atlas |
+| 24 (0x18) | 4 | RGBA8888 | full-colour layers (incl. the always-on `aodImage`) |
+| 1 | — | JPEG/JFIF (`ff d8 ff`), extract with any decoder | rare animation frames |
+
+✅ **All 4151/4151 assets across the 103 dials decode exactly** with a standard `lz4.block`
+decompressor at `w·h·bpp`. Transparency is the alpha byte (cf=5/24) or `0x0000` (cf=4 outside the
+circle) — there is no RLE and no "escape". Encode = re-raster → standard LZ4 → `[dimsWord][len][LZ4]`.
+
+**INIT_2 for `9075` — AES-encrypted body:**
+
+```
+kind(1) ‖ old_id(u32 LE) ‖ new_id(u32 LE) ‖ file_len(u32 LE)
+```
+
+`kind` = `0x02`/`0x03`; `old_id` = current active dial (from `9055`); `file_len` = real `.bin`
+size (= `@0x18 + 36`). Installing a store `.bin` as-is is the guaranteed path (Ring Data id 359 +
+102 others confirmed). (Reference: `core-rust/engine.rs::build_dial_replace_init`.)
+
+### 11.5 Structured directory grammar ✅ (decoded & implemented)
+
+Layer records start ~`0x60`, run until the first asset, and come in **normal/AOD pairs**. Each begins
+with `61 [01|0a] 00` + `u32 asset_ptr` (absolute file offset of the asset).
+
+- **Static image** (`61 01 00`): `asset_ptr(u32) ‖ elemId(u16) ‖ 05 05 00 01 ‖ pivotX(u16) ‖
+  pivotY(u16) ‖ 3B ‖ 01 ‖ 1b 00 ‖ X(u16) ‖ Y(u16)`. Top-left on the 466² canvas = `(X−pivotX, Y−pivotY)`.
+- **Pointer/hand** — same image record, rotated at runtime. **Rotation center = `(X+pivotX, Y+pivotY)`**
+  (≈ 233,233 on analog dials). The **data source is a `u8` at record offset `+36`**, scale `u16` at
+  `+38` (=60): `0x0a`/`0x70` = hour (`h·30°+m·0.5°`), `0x0e`/`0x71` = minute (`m·6°+s·0.1°`),
+  `0x12`/`0x72` = second (`s·6°`). ✅ confirmed by disassembling the getters (RTC fallback 10:10:30).
+- **Text / number widget** (`61 0a 00`): `asset_ptr(u32) ‖ [10×u16 font metrics] ‖ 40 01 00 ‖ flag ‖
+  3B ‖ 01 ‖ u16 ‖ X(u16) ‖ Y(u16)`. `asset_ptr` points at the glyph "0"; digit *d* = the asset at
+  `index("0") + d` (10 consecutive cf=5 sprites, e.g. `0123456789` and `,°` punctuation). ✅ rendered.
+- **Complication fill = frame-index** (✅ confirmed, not tint/arc): the value indexes a **pre-rendered
+  frame sheet** already in the `.bin` — `frame = (count−1)·val/100`, `asset = base + idx·stride`.
+  The frame table is a sub-record `61 ‖ count(u16) ‖ base(u32) ‖ count×id(u16)`. Rings/bars/dots are
+  frame sheets, not per-pixel drawing.
+- **Data source id** — the element's `82` attr-block sits at `delim+3` (after the last `40 01 00`),
+  and the **source id is a `u8` at `+0x14`** (also `relX@+0x07 s16`, `relY@+0x09 s16`, `anchor@+0x0C/0E`,
+  `mode@+0x15`, `frame-count@+0x1A`). Anchor < 0 = align to the parent's edge. 🔎 The firmware resolves
+  the id through a 142-entry getter table at `0x101f371c` (each calls `ux2sys_get(type)`). Common ids
+  (§16): `0x0b` hour, `0x0f` minute, `0x16` month, `0x18` weekday, `0x13` AM/PM, `0x19` HR,
+  `0x1b` battery %, `0x24` temperature, `0x36` steps, `0x70/71/72` hand angles, `0x25–27` goal %.
+- **Group node** (`0x68`): nests its children inside its own TLV body (`0x60` = value/text,
+  `0x30` = static); each `0x60` carries its source id at `data+16`. E.g. a group `0x07:0x0b:0x0f` =
+  HH:MM:SS clock. TLV element parser = `0x100db55c` (jump table indexed by `tag−0x70`).
+
+### 11.6 Authoring matrix
+
+| Path | Status | Notes |
+|---|---|---|
+| Photo dial from any image | ✅ **done** | §11.3; validated on-device |
+| Install any of 103 store dials | ✅ **done** | §11.4; `9075`, `old_id`=active |
+| Reskin cf=4 background of a store dial | ✅ **works live** | swap FULL payload in place, set the asset `len` to the **new** block size (≤ old), keep the same file footprint, fresh-install |
+| Re-author by templating (swap any layer's pixels + move geometry) | ✅ **renders via BLE** | dial 373: bg→cyan + a cf=5 sprite→red + moved X 224→100, all rendered, hands live |
+| 100 %-synthetic structured dial from scratch | 🟡 **probable** | all fields known; needs a `.wfdl` builder that emits the `0x20` scene envelope (§11.7) |
+| System fonts (`.font`) | ✅ decode/render | LVGL bin (not proprietary); 32 number fonts render; 25 text fonts use LVGL RLE (pending) |
+
+⚠️ Reskin/re-author pitfalls that cause a black screen or `0a`: leaving the **old asset `len`** (the
+watch reads past the block → overrun → black); **growing the file** (rejected at install); reusing an
+id **in place** instead of a fresh install.
+
+### 11.7 The `0x20` scene envelope (needed only for from-scratch) 🔎
+
+A re-authored **real** dial renders because it preserves the file's scene envelope. A purely synthetic
+body of flat `61 …` records is **rejected** — the firmware parser (`WFManager_Parser`, `0xdb35c`)
+requires the body (from offset `0x24`) to start with a `0x20` scene container:
+
+```
+20 <u16 L0> 21 <u16 L1> 86 40 00 <name NUL-pad> <children…>
+```
+
+`L0` = size of the children block; each child (groups `0x68`, records `0x61`/pointers) is **nested
+with its own `u16` length at `+1`**, and every child's `offset+len` must fit inside its parent's
+window. First body byte ≠ `0x20` → parser error −16; a child overrunning its window → −2; either makes
+the `9065` handler write finish `0a`. Free composition is therefore **possible** given a builder that
+emits this envelope with correct nested lengths. (Reference impl for parsing/rendering:
+`core-rust/watchface_struct.rs`; builder experiments: `wfeditor`.)
 
 ---
 

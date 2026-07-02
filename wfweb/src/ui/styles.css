@@ -217,3 +217,25 @@ h2 {
 
 .btn.danger { color: #ff7a6b; border-color: #5a2a2a; }
 .btn.danger:hover { background: #3a1e1e; border-color: #ff5b5b; }
+
+/* ---- Responsive: narrow screens (phones) — stack the 3 columns, canvas on top ---- */
+@media (max-width: 900px) {
+  body { height: auto; min-height: 100vh; overflow-y: auto; }
+  #topbar { flex-wrap: wrap; gap: 6px; }
+  #topbar .sub { flex-basis: 100%; }
+  #layout { display: flex; flex-direction: column; }
+  #center { order: 1; padding: 12px 8px; }
+  #left { order: 2; border-right: none; border-top: 1px solid var(--line); }
+  #right { order: 3; border-left: none; border-top: 1px solid var(--line); }
+  #left, #right { width: 100%; overflow: visible; }
+  #right { display: block; }
+  #preview {
+    width: min(92vw, 78vh);
+    height: min(92vw, 78vh);
+    max-width: none;
+    max-height: none;
+  }
+  .simpanel, .assetbar { max-width: 92vw; }
+  .layers { max-height: 40vh; overflow-y: auto; }
+  #jsonText { min-height: 140px; }
+}

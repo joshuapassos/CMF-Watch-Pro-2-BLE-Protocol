@@ -134,6 +134,10 @@ export class App {
     if (!this.dial) return;
     const [hh, mm, ss] = this.clockParts();
     const img = renderAt(this.dial, hh, mm, ss, this.jpegCache);
+    if (this.aodMode) { // AOD = tela always-on dimmed
+      const d = img.data;
+      for (let i = 0; i < d.length; i += 4) { d[i] *= 0.5; d[i + 1] *= 0.5; d[i + 2] *= 0.5; }
+    }
     drawToCanvas(this.canvas, img);
     // guias de alinhamento (durante o snap do drag)
     if (this.guides.length) {
@@ -508,9 +512,11 @@ export class App {
   }
 
   // ---- AOD ----
+  private aodMode = false;
   private onAod(on: boolean): void {
     if (!this.dial) return;
-    setAod(this.dial, on);
+    this.aodMode = on;
+    setAod(this.dial, on); // troca o fundo p/ a variante AOD (arte real always-on)
     this.render();
   }
 

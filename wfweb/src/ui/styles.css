@@ -90,6 +90,10 @@ h2 {
 .layers li.sel { background: #2d3444; outline: 1px solid var(--accent2); }
 .layers li .kind { font-size: 11px; color: var(--muted); margin-left: auto; }
 .layers li.hidden-layer { opacity: 0.45; }
+.layers li .reorder { display: none; gap: 2px; }
+.layers li:hover .reorder, .layers li.sel .reorder { display: inline-flex; }
+.layers li .reorder button { background: var(--panel2); border: 1px solid #3a4152; color: var(--fg); border-radius: 4px; font-size: 9px; line-height: 1; padding: 2px 4px; cursor: pointer; }
+.layers li .reorder button:hover { border-color: var(--accent); }
 
 #center {
   display: flex;

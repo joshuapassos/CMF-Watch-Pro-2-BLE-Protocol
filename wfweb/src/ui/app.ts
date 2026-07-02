@@ -21,6 +21,10 @@ export class App {
   jpegCache: JpegCache = new Map();
   private lastT = 0;
   private drag?: { startX: number; startY: number; layerX: number; layerY: number };
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
+  private zoom = 1;
+  private guides: Array<{ x?: number; y?: number }> = [];
 
   // refs
   private canvas = $<HTMLCanvasElement>("preview");
@@ -48,6 +52,20 @@ export class App {
     this.canvas.addEventListener("pointerdown", (e) => this.onPointerDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.onPointerMove(e));
     window.addEventListener("pointerup", () => this.onPointerUp());
+    // zoom (ctrl/⌘ + roda) na canvas
+    $("stage").addEventListener("wheel", (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      this.zoom = Math.max(0.5, Math.min(4, this.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+      this.canvas.style.transform = `scale(${this.zoom})`;
+    }, { passive: false });
+    // undo/redo
+    window.addEventListener("keydown", (e) => {
+      const z = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z";
+      const y = (e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"));
+      if (y) { e.preventDefault(); this.redo(); }
+      else if (z) { e.preventDefault(); this.undo(); }
+    });
   }
 
   private status(msg: string, kind: "" | "ok" | "err" = ""): void {
@@ -116,7 +134,77 @@ export class App {
     const [hh, mm, ss] = this.clockParts();
     const img = renderAt(this.dial, hh, mm, ss, this.jpegCache);
     drawToCanvas(this.canvas, img);
+    // guias de alinhamento (durante o snap do drag)
+    if (this.guides.length) {
+      const ctx = this.canvas.getContext("2d")!;
+      ctx.save();
+      ctx.strokeStyle = "#ff6a3d";
+      ctx.lineWidth = 1;
+      for (const g of this.guides) {
+        ctx.beginPath();
+        if (g.x !== undefined) { ctx.moveTo(g.x + 0.5, 0); ctx.lineTo(g.x + 0.5, 466); }
+        if (g.y !== undefined) { ctx.moveTo(0, g.y + 0.5); ctx.lineTo(466, g.y + 0.5); }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
     this.clock.textContent = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  }
+
+  // ---- Undo/redo (projeção dos campos editáveis + ordem das camadas) ----
+  private snapshot(): string {
+    if (!this.dial) return "[]";
+    return JSON.stringify(this.dial.layers.map((l) => [
+      l.assetOff, l.x, l.y, l.pivotX, l.pivotY, l.mock, l.sourceId ?? null,
+      l.color ?? null, l.arcMax ?? null, l.previewFrame ?? null, l.visible ? 1 : 0,
+    ]));
+  }
+
+  private restore(snap: string): void {
+    if (!this.dial) return;
+    const arr = JSON.parse(snap) as unknown[][];
+    const pool = [...this.dial.layers];
+    const out: typeof this.dial.layers = [];
+    for (const r of arr) {
+      const idx = pool.findIndex((l) => l.assetOff === r[0]); // casa por asset (restaura ordem)
+      if (idx < 0) continue;
+      const l = pool.splice(idx, 1)[0];
+      l.x = r[1] as number; l.y = r[2] as number; l.pivotX = r[3] as number; l.pivotY = r[4] as number;
+      l.mock = r[5] as Layer["mock"]; l.sourceId = (r[6] as number) ?? undefined;
+      l.color = (r[7] as [number, number, number]) ?? undefined; l.arcMax = (r[8] as number) ?? undefined;
+      l.previewFrame = (r[9] as number) ?? undefined; l.visible = r[10] === 1;
+      out.push(l);
+    }
+    out.push(...pool);
+    this.dial.layers = out;
+    this.refreshAll();
+  }
+
+  private lastUndoT = 0;
+  private pushUndo(): void {
+    if (!this.dial) return;
+    this.undoStack.push(this.snapshot());
+    if (this.undoStack.length > 100) this.undoStack.shift();
+    this.redoStack = [];
+    this.lastUndoT = performance.now();
+  }
+  /** Um snapshot por "gesto" (agrupa arrastar de slider): só empilha se passou >400ms. */
+  private pushUndoDebounced(): void {
+    if (performance.now() - this.lastUndoT > 400) this.pushUndo();
+  }
+
+  private undo(): void {
+    if (!this.dial || this.undoStack.length === 0) return;
+    this.redoStack.push(this.snapshot());
+    this.restore(this.undoStack.pop()!);
+    this.status("Desfeito.", "ok");
+  }
+
+  private redo(): void {
+    if (!this.dial || this.redoStack.length === 0) return;
+    this.undoStack.push(this.snapshot());
+    this.restore(this.redoStack.pop()!);
+    this.status("Refeito.", "ok");
   }
 
   private refreshAll(): void {
@@ -174,12 +262,27 @@ export class App {
       const li = document.createElement("li");
       if (i === this.selected) li.classList.add("sel");
       if (!l.visible) li.classList.add("hidden-layer");
-      li.innerHTML = `<span>${iconFor(l.kind)}</span><span>${l.name}</span><span class="kind">${l.cf ? "cf" + l.cf : ""} ${l.w}×${l.h}</span>`;
+      li.innerHTML = `<span>${iconFor(l.kind)}</span><span class="lname">${l.name}</span><span class="kind">${l.cf ? "cf" + l.cf : ""} ${l.w}×${l.h}</span>` +
+        `<span class="reorder"><button data-up title="Subir (z-order)">▲</button><button data-dn title="Descer">▼</button></span>`;
       li.addEventListener("click", () => {
         this.selected = i;
         this.buildLayerList();
         this.buildInspector();
       });
+      const move = (dir: number) => (ev: Event) => {
+        ev.stopPropagation();
+        const j = i + dir;
+        if (!this.dial || j < 0 || j >= this.dial.layers.length) return;
+        this.pushUndo();
+        const arr = this.dial.layers;
+        [arr[i], arr[j]] = [arr[j], arr[i]]; // z-order do preview (export é in-place, não muda)
+        this.selected = j;
+        this.buildLayerList();
+        this.buildInspector();
+        this.render();
+      };
+      li.querySelector("[data-up]")!.addEventListener("click", move(-1));
+      li.querySelector("[data-dn]")!.addEventListener("click", move(1));
       this.layerList.appendChild(li);
     });
   }
@@ -240,6 +343,7 @@ export class App {
         srcSel.appendChild(opt);
       }
       srcSel.addEventListener("change", () => {
+        this.pushUndo();
         const id = parseInt(srcSel.value, 10);
         l.sourceId = id;
         l.mock = mockFromSourceId(id);
@@ -251,6 +355,7 @@ export class App {
 
     const bindNum = (id: string, set: (v: number) => void) => {
       $<HTMLInputElement>(id).addEventListener("input", (e) => {
+        this.pushUndoDebounced();
         set(parseInt((e.target as HTMLInputElement).value || "0", 10) | 0);
         this.render();
         this.refreshJson();
@@ -265,6 +370,7 @@ export class App {
     const frameSl = document.getElementById("fFrame") as HTMLInputElement | null;
     if (frameSl) {
       frameSl.addEventListener("input", () => {
+        this.pushUndoDebounced();
         l.previewFrame = parseInt(frameSl.value, 10) | 0;
         const v = document.getElementById("fFrameV");
         if (v) v.textContent = String(l.previewFrame);
@@ -274,6 +380,7 @@ export class App {
 
     if (hasColor) {
       $<HTMLInputElement>("fColor").addEventListener("input", (e) => {
+        this.pushUndoDebounced();
         const v = (e.target as HTMLInputElement).value; // #rrggbb
         l.color = [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16)];
         this.render();
@@ -282,11 +389,13 @@ export class App {
     }
 
     mockSel.addEventListener("change", () => {
+      this.pushUndo();
       l.mock = mockSel.value as MockKind;
       this.render();
       this.refreshJson();
     });
     $<HTMLInputElement>("fVis").addEventListener("change", (e) => {
+      this.pushUndo();
       l.visible = (e.target as HTMLInputElement).checked;
       this.buildLayerList();
       this.render();
@@ -399,6 +508,7 @@ export class App {
   private onPointerDown(e: PointerEvent): void {
     const l = this.dial?.layers[this.selected];
     if (!l || l.xOff === undefined || l.yOff === undefined) return;
+    this.pushUndo();
     const [x, y] = pointerToCanvas(this.canvas, e);
     this.drag = { startX: x, startY: y, layerX: l.x, layerY: l.y };
     this.canvas.classList.add("dragging");
@@ -411,8 +521,18 @@ export class App {
     if (!this.drag) return;
     const l = this.dial?.layers[this.selected];
     if (!l) return;
-    l.x = Math.max(0, Math.min(465, this.drag.layerX + (x - this.drag.startX)));
-    l.y = Math.max(0, Math.min(465, this.drag.layerY + (y - this.drag.startY)));
+    let nx = Math.max(0, Math.min(465, this.drag.layerX + (x - this.drag.startX)));
+    let ny = Math.max(0, Math.min(465, this.drag.layerY + (y - this.drag.startY)));
+    // SNAP: centro do sprite → centro do canvas (233) ou bordas, com guias visuais.
+    this.guides = [];
+    const T = 6;
+    const cx = nx + l.w / 2, cy = ny + l.h / 2;
+    if (Math.abs(cx - 233) < T) { nx = 233 - l.w / 2; this.guides.push({ x: 233 }); }
+    else if (Math.abs(nx) < T) { nx = 0; this.guides.push({ x: 0 }); }
+    if (Math.abs(cy - 233) < T) { ny = 233 - l.h / 2; this.guides.push({ y: 233 }); }
+    else if (Math.abs(ny) < T) { ny = 0; this.guides.push({ y: 0 }); }
+    l.x = Math.round(nx);
+    l.y = Math.round(ny);
     this.render();
     const fx = document.getElementById("fX") as HTMLInputElement | null;
     const fy = document.getElementById("fY") as HTMLInputElement | null;
@@ -424,6 +544,8 @@ export class App {
     if (this.drag) {
       this.drag = undefined;
       this.canvas.classList.remove("dragging");
+      this.guides = [];
+      this.render();
       this.refreshJson();
     }
   }

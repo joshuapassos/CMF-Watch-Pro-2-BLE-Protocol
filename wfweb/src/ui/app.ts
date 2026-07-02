@@ -81,8 +81,8 @@ export class App {
     const bytes = await readFileBytes(file);
     if (isPhotoDial(bytes)) {
       this.status(
-        "Este é um <b>photo-dial</b> (6c8dc4a5). O editor de camadas trabalha com dials " +
-          "<b>estruturados</b>; use “🖼 Novo photo-dial” para criar um.",
+        "This is a <b>photo dial</b> (6c8dc4a5). The layer editor works with <b>structured</b> " +
+          "dials; use \u201c🖼 New photo dial\u201d to create one.",
         "err",
       );
       return;
@@ -95,11 +95,11 @@ export class App {
       this.enableUi(true);
       this.refreshAll();
       this.status(
-        `Aberto <code>${file.name}</code> — id ${dial.perDialId}, “${dial.name}”, ${dial.layers.length} camadas.`,
+        `Opened <code>${file.name}</code> — id ${dial.perDialId}, \u201c${dial.name}\u201d, ${dial.layers.length} layers.`,
         "ok",
       );
     } catch (err) {
-      this.status(`Falha ao parsear: ${(err as Error).message}`, "err");
+      this.status(`Parse failed: ${(err as Error).message}`, "err");
     }
   }
 
@@ -153,6 +153,19 @@ export class App {
       }
       ctx.restore();
     }
+    // selection outline for the currently-selected layer (so you see what's selected on-canvas)
+    const sel = this.dial.layers[this.selected];
+    if (sel && !sel.deleted && sel.kind !== "background") {
+      const ctx = this.canvas.getContext("2d")!;
+      const ox = sel.kind === "image" || sel.kind === "pointer" ? sel.x - sel.pivotX : sel.x;
+      const oy = sel.kind === "image" || sel.kind === "pointer" ? sel.y - sel.pivotY : sel.y;
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#4da3ff";
+      ctx.strokeRect(ox + 0.5, oy + 0.5, Math.max(sel.w, 6), Math.max(sel.h, 6));
+      ctx.restore();
+    }
     this.clock.textContent = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
   }
 
@@ -185,14 +198,14 @@ export class App {
     if (!this.dial || this.undoStack.length === 0) return;
     this.redoStack.push(this.snapshot());
     this.restore(this.undoStack.pop()!);
-    this.status("Desfeito.", "ok");
+    this.status("Undone.", "ok");
   }
 
   private redo(): void {
     if (!this.dial || this.redoStack.length === 0) return;
     this.undoStack.push(this.snapshot());
     this.restore(this.redoStack.pop()!);
-    this.status("Refeito.", "ok");
+    this.status("Redone.", "ok");
   }
 
   private refreshAll(): void {
@@ -211,13 +224,13 @@ export class App {
     if (!body || !this.dial) return;
     const t = Math.floor(this.simSeconds);
     const rows: Array<[string, number, number, number, (v: number) => void, () => string]> = [
-      ["Hora do dia", 0, 12 * 3600 - 1, t, (v) => (this.simSeconds = v), () => {
+      ["Time of day", 0, 12 * 3600 - 1, t, (v) => (this.simSeconds = v), () => {
         const s = Math.floor(this.simSeconds); return `${String(Math.floor(s / 3600) % 24).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
       }],
-      ["% de meta / bateria", 0, 100, simEnv.percent, (v) => { simEnv.percent = v; simEnv.battery = v; }, () => `${simEnv.percent}%`],
-      ["Passos", 0, 15000, simEnv.steps, (v) => (simEnv.steps = v), () => String(simEnv.steps)],
-      ["Freq. cardíaca", 40, 200, simEnv.bpm, (v) => (simEnv.bpm = v), () => `${simEnv.bpm} bpm`],
-      ["Dia da semana", 0, 6, simEnv.weekday, (v) => (simEnv.weekday = v), () => ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"][simEnv.weekday]],
+      ["% goal / battery", 0, 100, simEnv.percent, (v) => { simEnv.percent = v; simEnv.battery = v; }, () => `${simEnv.percent}%`],
+      ["Steps", 0, 15000, simEnv.steps, (v) => (simEnv.steps = v), () => String(simEnv.steps)],
+      ["Heart rate", 40, 200, simEnv.bpm, (v) => (simEnv.bpm = v), () => `${simEnv.bpm} bpm`],
+      ["Weekday", 0, 6, simEnv.weekday, (v) => (simEnv.weekday = v), () => ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][simEnv.weekday]],
     ];
     body.innerHTML = "";
     for (const [label, min, max, val, set, fmt] of rows) {
@@ -257,6 +270,7 @@ export class App {
         this.selected = i;
         this.buildLayerList();
         this.buildInspector();
+        this.render(); // redraw so the selection outline follows the picked layer
       });
       const move = (dir: number) => (ev: Event) => {
         ev.stopPropagation();
@@ -292,24 +306,24 @@ export class App {
     const isArc = l.kind === "arc";
     const isDataBound = l.kind === "text" || l.kind === "pointer" || l.kind === "arc";
     const hex = l.color ? "#" + l.color.map((c) => c.toString(16).padStart(2, "0")).join("") : "#ffffff";
-    const persistNote = l.srcOff !== undefined || l.colorOff !== undefined ? "" : " (só preview)";
+    const persistNote = l.srcOff !== undefined || l.colorOff !== undefined ? "" : " (preview only)";
 
     const frag = document.createElement("div");
     frag.innerHTML = `
-      <div class="field"><label>Tipo</label><span>${iconFor(l.kind)} ${l.kind} · cf${l.cf} · ${l.w}×${l.h}${l.frames ? ` · ${l.frames} frames` : ""}</span></div>
+      <div class="field"><label>Type</label><span>${iconFor(l.kind)} ${l.kind} · cf${l.cf} · ${l.w}×${l.h}${l.frames ? ` · ${l.frames} frames` : ""}</span></div>
       <div class="field"><label>X</label><input type="number" id="fX" value="${l.x}" ${movable ? "" : "disabled"}></div>
       <div class="field"><label>Y</label><input type="number" id="fY" value="${l.y}" ${movable ? "" : "disabled"}></div>
       <div class="field"><label>Pivot X</label><input type="number" id="fPX" value="${l.pivotX}" ${pivotable ? "" : "disabled"}></div>
       <div class="field"><label>Pivot Y</label><input type="number" id="fPY" value="${l.pivotY}" ${pivotable ? "" : "disabled"}></div>
-      ${isDataBound ? `<div class="field"><label>Fonte${persistNote}</label><select id="fSrc"></select></div>` : ""}
-      ${hasColor ? `<div class="field"><label>Cor${l.colorOff === undefined ? " (só preview)" : ""}</label><input type="color" id="fColor" value="${hex}"></div>` : ""}
-      ${isArc ? `<div class="field"><label>Máx (anel)</label><input type="number" id="fMax" value="${l.arcMax ?? 100}"></div>` : ""}
+      ${isDataBound ? `<div class="field"><label>Source${persistNote}</label><select id="fSrc"></select></div>` : ""}
+      ${hasColor ? `<div class="field"><label>Color${l.colorOff === undefined ? " (preview only)" : ""}</label><input type="color" id="fColor" value="${hex}"></div>` : ""}
+      ${isArc ? `<div class="field"><label>Max (ring)</label><input type="number" id="fMax" value="${l.arcMax ?? 100}"></div>` : ""}
       ${l.frames && l.frames > 1 && !isArc ? `<div class="field"><label>Frame</label><input type="range" id="fFrame" min="0" max="${l.frames - 1}" value="${l.previewFrame ?? 0}"><span id="fFrameV">${l.previewFrame ?? "auto"}</span></div>` : ""}
-      <div class="field"><label>Dado (mock)</label><select id="fMock"></select></div>
-      <div class="field"><label>Visível</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
-      <div class="field full"><button class="btn wide" id="fReplace">🖼 Trocar imagem…</button></div>
-      <div class="field full"><button class="btn wide" id="fDup">⧉ Duplicar camada</button></div>
-      <div class="field full"><button class="btn wide danger" id="fDelete">🗑 Deletar camada</button></div>
+      <div class="field"><label>Data (mock)</label><select id="fMock"></select></div>
+      <div class="field"><label>Visible</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
+      <div class="field full"><button class="btn wide" id="fReplace">🖼 Replace image…</button></div>
+      <div class="field full"><button class="btn wide" id="fDup">⧉ Duplicate layer</button></div>
+      <div class="field full"><button class="btn wide danger" id="fDelete">🗑 Delete layer</button></div>
     `;
     this.inspBody.innerHTML = "";
     this.inspBody.appendChild(frag);
@@ -407,14 +421,14 @@ export class App {
       this.dial.layers.splice(this.selected + 1, 0, clone);
       this.selected += 1;
       this.refreshAll();
-      this.status(`Camada duplicada. Export insere o novo nó (rebuild). Troque a imagem se quiser.`, "ok");
+      this.status(`Layer duplicated. Export inserts the new node (rebuild). Replace its image if you want.`, "ok");
     });
     $("fDelete").addEventListener("click", () => {
       this.pushUndo();
       l.deleted = true;
       this.selected = -1;
       this.refreshAll();
-      this.status(`Camada "${l.name}" removida. Export fará rebuild do container (Ctrl+Z desfaz).`, "ok");
+      this.status(`Layer "${l.name}" removed. Export will rebuild the container (Ctrl+Z undoes).`, "ok");
     });
   }
 
@@ -475,7 +489,7 @@ export class App {
     this.buildLayerList();
     this.buildInspector();
     this.render();
-    this.status("Notação aplicada.", "ok");
+    this.status("Notation applied.", "ok");
   }
 
   // ---- Troca de imagem de uma camada ----
@@ -502,10 +516,10 @@ export class App {
             "err",
           );
         } else {
-          this.status(`Imagem trocada (${size}B ≤ ${l.assetLen}B). ✓`, "ok");
+          this.status(`Image replaced (${size}B ≤ ${l.assetLen}B). ✓`, "ok");
         }
       } catch (err) {
-        this.status("Falha ao carregar imagem: " + (err as Error).message, "err");
+        this.status("Image load failed: " + (err as Error).message, "err");
       }
     });
     input.click();
@@ -617,11 +631,11 @@ export class App {
       }
       downloadBytes(bytes, outName(this.dial.perDialId, this.dial.name));
       this.status(
-        `Exportado (${bytes.length}B${structural ? ", rebuild ✓ validado" : ""}). Instale via pipeline 0x9075.`,
+        `Exported (${bytes.length}B${structural ? ", rebuild ✓ validated" : ""}). Install via the 0x9075 pipeline.`,
         "ok",
       );
     } catch (err) {
-      this.status("Falha ao exportar: " + (err as Error).message, "err");
+      this.status("Export failed: " + (err as Error).message, "err");
     }
   }
 
@@ -640,7 +654,7 @@ export class App {
         "ok",
       );
     } catch (err) {
-      this.status("Falha ao gerar photo-dial: " + (err as Error).message, "err");
+      this.status("Photo-dial generation failed: " + (err as Error).message, "err");
     }
   }
 }

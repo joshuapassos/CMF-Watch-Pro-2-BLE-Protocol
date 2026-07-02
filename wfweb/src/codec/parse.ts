@@ -337,7 +337,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
   if (bgPick) {
     const [off, cf, w, h, len] = bgPick;
     layers.push(mkLayer({
-      kind: "background", name: "Fundo", cf, w, h, assetOff: off, assetLen: len, x: bgX, y: bgY,
+      kind: "background", name: "Background", cf, w, h, assetOff: off, assetLen: len, x: bgX, y: bgY,
     }));
     usedAssets.add(off);
   }
@@ -415,7 +415,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
         placed.add(key);
         const at = assetMap.get(d.assetOff);
         layers.push(mkLayer({
-          kind: "arc", name: `Anel ${idx}`,
+          kind: "arc", name: `Ring ${idx}`,
           cf: at ? at[0] : 5, w: d.w ?? (at ? at[1] : 0), h: d.h ?? (at ? at[2] : 0),
           assetOff: d.assetOff, assetLen: at ? at[3] : 0,
           x: d.x, y: d.y, mock: "percent", arcMax: d.arc.max,
@@ -444,7 +444,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
         if (!placed.has(key)) {
           placed.add(key);
           layers.push(mkLayer({
-            kind: "text", name: `Dígito ${idx}`,
+            kind: "text", name: `Digit ${idx}`,
             cf, w, h, assetOff: d.assetOff, assetLen: alen,
             x: d.x, y: d.y, mock: mockFromSourceId(d.sourceId), sourceId: d.sourceId,
           }));
@@ -474,7 +474,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
       const kind: LayerKind = d.tag === 0x70 ? "pointer" : "image";
       layers.push(mkLayer({
         kind,
-        name: kind === "pointer" ? `Ponteiro ${idx}` : `Imagem ${idx}`,
+        name: kind === "pointer" ? `Pointer ${idx}` : `Image ${idx}`,
         cf, w, h, assetOff: d.assetOff, assetLen: alen,
         x: d.x, y: d.y,
         pivotX: d.pivotX ?? 0, pivotY: d.pivotY ?? 0,
@@ -633,10 +633,10 @@ export function parseStructured(bin: Uint8Array): StructDial {
           placed.add(key);
         }
         const kname =
-          kind === "pointer" ? `Ponteiro ${idx}`
-          : kind === "text" ? `Texto ${idx}`
-          : kind === "image" ? `Imagem ${idx}`
-          : `Camada ${idx} (não-posicionada)`;
+          kind === "pointer" ? `Pointer ${idx}`
+          : kind === "text" ? `Text ${idx}`
+          : kind === "image" ? `Image ${idx}`
+          : `Layer ${idx} (unpositioned)`;
         layers.push(mkLayer({
           kind, name: kname, cf, w, h, assetOff: ptr, assetLen: alen,
           x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId, color, colorOff, srcOff,
@@ -678,7 +678,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
     const a = assetMap.get(ptr) ?? [5, gw, gh, 0];
     layers.push(mkLayer({
       kind: "text",
-      name: isClock ? "Relógio (grupo)" : `${mock} (grupo)`,
+      name: isClock ? "Clock (group)" : `${mock} (group)`,
       cf: a[0], w: a[1], h: a[2], assetOff: ptr, assetLen: a[3],
       x: gx, y: gy, mock, sourceId: src0,
     }));

@@ -53,9 +53,9 @@ export function mockSample(kind: MockKind, hh: number, mm: number, ss: number): 
 /** Rótulo curto p/ o dropdown do inspector. */
 export function mockLabel(kind: MockKind): string {
   const m: Record<MockKind, string> = {
-    none: "Nenhum", time: "Relógio", hour: "Hora", minute: "Minuto", seconds: "Segundos",
-    ampm: "AM/PM", date: "Data", weekday: "Dia", steps: "Passos", kcal: "Kcal", bpm: "BPM",
-    battery: "Bateria", temp: "Temp", distance: "Distância", percent: "Meta %", generic: "Genérico",
+    none: "None", time: "Clock", hour: "Hour", minute: "Minute", seconds: "Seconds",
+    ampm: "AM/PM", date: "Date", weekday: "Weekday", steps: "Steps", kcal: "Kcal", bpm: "BPM",
+    battery: "Battery", temp: "Temp", distance: "Distance", percent: "Goal %", generic: "Generic",
   };
   return m[kind];
 }
@@ -106,24 +106,24 @@ export function digitForSource(id: number, hh: number, mm: number, ss: number): 
  * dropdown do inspector: escrever o `id` no record rebinda a complicação/texto no relógio.
  */
 export const DATA_SOURCES: Array<{ id: number; label: string; mock: MockKind }> = [
-  { id: 0x07, label: "Hora (12h)", mock: "hour" },
-  { id: 0x04, label: "Hora (24h)", mock: "hour" },
-  { id: 0x0b, label: "Minuto", mock: "minute" },
-  { id: 0x0f, label: "Segundo", mock: "seconds" },
+  { id: 0x07, label: "Hour (12h)", mock: "hour" },
+  { id: 0x04, label: "Hour (24h)", mock: "hour" },
+  { id: 0x0b, label: "Minute", mock: "minute" },
+  { id: 0x0f, label: "Second", mock: "seconds" },
   { id: 0x13, label: "AM/PM", mock: "ampm" },
-  { id: 0x17, label: "Dia do mês", mock: "date" },
-  { id: 0x16, label: "Mês", mock: "date" },
-  { id: 0x18, label: "Dia da semana", mock: "weekday" },
-  { id: 0x36, label: "Passos", mock: "steps" },
-  { id: 0x60, label: "Calorias", mock: "kcal" },
-  { id: 0x61, label: "Distância", mock: "distance" },
-  { id: 0x48, label: "Freq. cardíaca", mock: "bpm" },
-  { id: 0x1b, label: "Bateria %", mock: "battery" },
-  { id: 0x24, label: "Temperatura", mock: "temp" },
-  { id: 0x25, label: "% de meta", mock: "percent" },
-  { id: 0x70, label: "Ponteiro hora", mock: "hour" },
-  { id: 0x71, label: "Ponteiro minuto", mock: "minute" },
-  { id: 0x72, label: "Ponteiro segundo", mock: "seconds" },
+  { id: 0x17, label: "Day of month", mock: "date" },
+  { id: 0x16, label: "Month", mock: "date" },
+  { id: 0x18, label: "Weekday", mock: "weekday" },
+  { id: 0x36, label: "Steps", mock: "steps" },
+  { id: 0x60, label: "Calories", mock: "kcal" },
+  { id: 0x61, label: "Distance", mock: "distance" },
+  { id: 0x48, label: "Heart rate", mock: "bpm" },
+  { id: 0x1b, label: "Battery %", mock: "battery" },
+  { id: 0x24, label: "Temperature", mock: "temp" },
+  { id: 0x25, label: "% of goal", mock: "percent" },
+  { id: 0x70, label: "Hour hand", mock: "hour" },
+  { id: 0x71, label: "Minute hand", mock: "minute" },
+  { id: 0x72, label: "Second hand", mock: "seconds" },
 ];
 
 /** Papel de um PONTEIRO pela fonte em @36. 0x0a/0x70→hora, 0x0e/0x71→min, 0x12/0x72→seg. */

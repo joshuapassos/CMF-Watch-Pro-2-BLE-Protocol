@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wfweb — compare (render vs asset)</title>
+    <style>
+      body { margin: 0; background: #14161a; color: #e6e6e6; font: 13px/1.4 system-ui, sans-serif; }
+      header { padding: 10px 16px; background: #1c1f26; position: sticky; top: 0; z-index: 2; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+      header b { color: #ff6a3d; }
+      #summary { color: #9aa; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { padding: 6px 8px; border-bottom: 1px solid #2a2e37; text-align: left; vertical-align: middle; }
+      th { position: sticky; top: 52px; background: #1c1f26; cursor: pointer; user-select: none; }
+      tr:hover { background: #1a1d24; }
+      canvas.thumb { width: 96px; height: 96px; border: 1px solid #333; image-rendering: pixelated; background: #000; }
+      .cmp { display: flex; gap: 6px; }
+      .lbl { font-size: 10px; color: #789; text-align: center; }
+      .bad { color: #ff5b5b; font-weight: 700; }
+      .warn { color: #ffb648; }
+      .ok { color: #4fd67a; }
+      .err { color: #ff5b5b; font-family: monospace; font-size: 11px; }
+      td.num { font-variant-numeric: tabular-nums; text-align: right; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <b>wfweb compare</b>
+      <span id="summary">carregando…</span>
+      <span style="color:#789">render @ 10:12:00 · diff = % pixels com Δcanal &gt; 32</span>
+    </header>
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th data-k="id">id</th>
+          <th data-k="name">nome</th>
+          <th data-k="style">estilo</th>
+          <th data-k="size">bytes</th>
+          <th data-k="layers">cam</th>
+          <th data-k="diffPct">diff%</th>
+          <th data-k="meanDiff">Δméd</th>
+          <th>render / asset</th>
+          <th data-k="err">status</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script type="module" src="/src/compare.ts"></script>
+  </body>
+</html>

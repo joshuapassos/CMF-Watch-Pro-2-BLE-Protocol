@@ -595,10 +595,34 @@ kind(1) ‖ old_id(u32 LE) ‖ new_id(u32 LE) ‖ file_len(u32 LE)
 size (= `@0x18 + 36`). Installing a store `.bin` as-is is the guaranteed path (Ring Data id 359 +
 102 others confirmed). (Reference: `core-rust/engine.rs::build_dial_replace_init`.)
 
-### 11.5 Structured directory grammar ✅ (decoded & implemented)
+### 11.5 Structured directory grammar ✅ (decoded & implemented — REVISED 2026-07-02)
 
-Layer records start ~`0x60`, run until the first asset, and come in **normal/AOD pairs**. Each begins
-with `61 [01|0a] 00` + `u32 asset_ptr` (absolute file offset of the asset).
+> **⚠️ Revision (2026-07-02): the flat `61 01 00` record schema below was systematically
+> OFF-BY-ONE.** The scene body is a clean TLV (§11.7); a drawable **leaf body** (tags `0x30`/`0x38`
+> static, `0x70` pointer) is:
+>
+> ```
+> 01 xx 00 [X u16][Y u16] …attrs… 61 [count u16][base u32][count×id u16] [05 05 00 01 pivX pivY]
+> ```
+>
+> - attr `0x01` opens the body: **X,Y = top-left** on the 466² canvas (the `s16 x,y` of the SDK's
+>   `sty_picture_t`).
+> - the **frame table `61 …` closes the body** (`base` = asset ptr; `count` 1 = image, 10/11 =
+>   digit atlas — the old "record type `0a/0b`" was actually this count! — 7/13/2 = complication
+>   frame sheet).
+> - pointer extras: source+scale `[src] 00 3c 00` inside the `0x01` attr; pivot in the
+>   `05 05 00 01 [pivX][pivY]` **trailer**. **Rotation center = `(X+pivX, Y+pivY)` per pointer** —
+>   not a fixed (233,233): off-center subdials exist (e.g. dial 366's hands rotate around 150,150).
+>
+> The linear scan for `61 01 00` was stitching the frame-table+pivot of element **N** to the X/Y
+> (and tag byte, the old "f3") of element **N+1** — it only *looked* right on analog dials whose
+> adjacent hands share near-identical geometry. The "compact variant wall" (spec 24 §24.4.5) was
+> this same misreading. Implemented as `scan_scene_drawables` in `core-rust/watchface_struct.rs`
+> and `wfweb/src/codec/parse.ts` (scene = primary source for images/pointers; flat scan kept for
+> text + non-envelope fallback). Validated by the `wfweb/compare.html` oracle (render vs official
+> store PNGs, 99 dials): 64→72 good, 8→5 bad, mean diff 9.3→7.4%.
+
+Historic flat-record reading (superseded, kept for context):
 
 - **Static image** (`61 01 00`): `asset_ptr(u32) ‖ elemId(u16) ‖ 05 05 00 01 ‖ pivotX(u16) ‖
   pivotY(u16) ‖ 3B ‖ 01 ‖ 1b 00 ‖ X(u16) ‖ Y(u16)`. Top-left on the 466² canvas = `(X−pivotX, Y−pivotY)`.
@@ -609,10 +633,16 @@ with `61 [01|0a] 00` + `u32 asset_ptr` (absolute file offset of the asset).
 - **Text / number widget** (`61 0a 00`): `asset_ptr(u32) ‖ [10×u16 font metrics] ‖ 40 01 00 ‖ flag ‖
   3B ‖ 01 ‖ u16 ‖ X(u16) ‖ Y(u16)`. `asset_ptr` points at the glyph "0"; digit *d* = the asset at
   `index("0") + d` (10 consecutive cf=5 sprites, e.g. `0123456789` and `,°` punctuation). ✅ rendered.
-- **Complication fill = frame-index** (✅ confirmed, not tint/arc): the value indexes a **pre-rendered
-  frame sheet** already in the `.bin` — `frame = (count−1)·val/100`, `asset = base + idx·stride`.
-  The frame table is a sub-record `61 ‖ count(u16) ‖ base(u32) ‖ count×id(u16)`. Rings/bars/dots are
-  frame sheets, not per-pixel drawing.
+- **Complication fill = frame-index** (✅ confirmed for digit/enum/gauge complications, count>1): the
+  value indexes a **pre-rendered frame sheet** in the `.bin` — `frame = (count−1)·val/100` (percent) or
+  `frame = value` (flip digit / enum). Frame table = sub-record `61 ‖ count(u16) ‖ base(u32) ‖
+  count×id(u16)`. E.g. 327 Digit Max's big hour is a 13-frame sheet (numbers 0–12), `frame = hour`.
+- **Progress ring / arc = runtime sector clip** (✅ 2026-07-02, **corrects the "rings are frame sheets"
+  reading in spec 25 §2**): element tag **`0x81`** carries a **single** full disc (`61` frame-table
+  `count == 1`), and the partial wedge is that disc **clipped to a pie sector** (`frac = value/max`,
+  clockwise from 12 o'clock) — verified pixel-for-pixel on 322 Glare 2 and confirmed `count==1` across
+  **20 dials**. On-disk: `0x81` body = sub `0x01` (geometry `x@+0 y@+2 w@+4 h@+6`, inline `61 1 base`
+  = disc) + sub `0x5b` (`max` u16 `@+4`, =100 except 332=60). Implemented in wfweb (`blendSector`).
 - **Data source id** — the element's `82` attr-block sits at `delim+3` (after the last `40 01 00`),
   and the **source id is a `u8` at `+0x14`** (also `relX@+0x07 s16`, `relY@+0x09 s16`, `anchor@+0x0C/0E`,
   `mode@+0x15`, `frame-count@+0x1A`). Anchor < 0 = align to the parent's edge. 🔎 The firmware resolves
@@ -655,7 +685,9 @@ requires the body (from offset `0x24`) to start with a `0x20` scene container. T
 The scene is a **clean nested TLV** — `[tag u8][len u16 LE][body]`, container tags `0x20/0x21/0x22/0x68`
 recursing, leaf drawables `0x30` (static) / `0x70` (element/pointer) / `0x80` / `0x81` / `0x86` (name).
 (The flat `61 01 00` / `61 0a 00` records are patterns that live **inside** the drawable bodies; the
-old parser found them heuristically.) Every child's `offset+len` must fit inside its parent's window;
+old parser found them heuristically — and stitched adjacent bodies together, see the §11.5 revision.
+The drawable body layout is now fully decoded there.) Every child's `offset+len` must fit inside its
+parent's window;
 first body byte ≠ `0x20` → parser error −16; a child overrunning its window → −2; either makes the
 `9065` handler (`0xeb50c`) write finish `0a`.
 

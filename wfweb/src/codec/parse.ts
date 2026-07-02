@@ -2,7 +2,7 @@
 import { u16le, u32le, i16le, i8, hasSeq, matchAt } from "./bytes.js";
 import { lz4Decode, lz4DecodeStrict } from "./lz4.js";
 import { rgb565ToRgb, bppOf, decodedSize } from "./rgb565.js";
-import { mockFromSourceId, pointerRole } from "./mock.js";
+import { mockFromSourceId, pointerRole, digitForSource } from "./mock.js";
 import type { Layer, LayerKind, MockKind, ScannedAsset, StructDial } from "./types.js";
 
 const SIG = [0x1f, 0x00, 0x01, 0x00];
@@ -105,6 +105,171 @@ function mkLayer(partial: Partial<Layer> & Pick<Layer, "kind" | "name" | "cf" | 
     x: 0, y: 0, pivotX: 0, pivotY: 0, visible: true, mock: "none",
     ...partial,
   };
+}
+
+/**
+ * Drawable extraído da CENA TLV (spec 26 / SDK Actions). Corpo de folha 0x30/0x38/0x70:
+ * `01 xx 00 [X u16][Y u16] …attrs… 61 [count u16][base u32][count×id u16] [05 05 00 01 pivX pivY]`
+ * (X,Y = canto sup-esq; pivô só em ponteiro; fonte do ponteiro = `[src] 00 3c 00` antes da tabela).
+ * O scan plano de `61 01 00` misturava campos de nós ADJACENTES (frame-table do elemento N +
+ * X/Y do N+1) — este walker lê cada corpo dentro da própria janela TLV.
+ */
+export interface SceneDrawable {
+  tag: number;
+  x: number;
+  y: number;
+  xOff: number;
+  yOff: number;
+  assetOff: number;
+  frameCount: number;
+  pivotX?: number;
+  pivotY?: number;
+  pivxOff?: number;
+  pivyOff?: number;
+  sourceId?: number;
+  /** Há um attr-block `40 01 00 82 …` no corpo? (fonte veio de `82+0x14`, não do inline `+0x10`). */
+  hasAttr?: boolean;
+  /** Dimensões do rect (usado p/ arco vetorial compacto, que não tem asset). */
+  w?: number;
+  h?: number;
+  /** Anel de progresso (0x81): setor = valor/max. `color`=arco vetorial compacto; senão disco texturizado. */
+  arc?: { max: number; color?: [number, number, number]; width?: number };
+}
+
+const SCENE_DRAWABLE_TAGS = new Set([0x30, 0x38, 0x70]);
+
+/** Frame-table `61 [count u16][base u32][ids]` dentro do corpo de um drawable; base = asset válido. */
+function findFrameTable(bin: Uint8Array, body: number, ln: number, isAsset: (p: number) => boolean): { at: number; count: number; base: number } | null {
+  for (let k = 6; k + 9 <= ln; k++) {
+    if (bin[body + k] !== 0x61) continue;
+    const c = u16le(bin, body + k + 1);
+    if (c < 1 || c > 130) continue;
+    const b0 = u32le(bin, body + k + 3);
+    if (isAsset(b0)) return { at: k, count: c, base: b0 };
+  }
+  return null;
+}
+
+export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => boolean): SceneDrawable[] {
+  const out: SceneDrawable[] = [];
+  if (bin.length < 0x2a || bin[0x24] !== 0x20) return out; // sem envelope → scan plano
+  const sceneEnd = Math.min(0x27 + u16le(bin, 0x25), bin.length);
+  // (ox,oy) = origem do container/grupo (rect do 0x68) herdada pelos filhos posicionados.
+  const walk = (off: number, end: number, ox: number, oy: number, inGroup: boolean): void => {
+    let i = off;
+    while (i + 3 <= end) {
+      const tag = bin[i];
+      const ln = u16le(bin, i + 1);
+      const body = i + 3;
+      if (body + ln > end) return; // janela malformada — aborta este nível
+      if (tag === 0x20 || tag === 0x21) {
+        walk(body, body + ln, ox, oy, inGroup);
+        // 0x22 (AOD) fica fora do walker.
+      } else if (tag === 0x68) {
+        // GRUPO (SDK sty_group_t): filhos posicionais distribuídos pelo firmware (spec 25 §6/§7).
+        // Não emitimos como drawables (regride 357/376 — colidem com sprites top-level). Recursa só.
+        walk(body, body + ln, ox, oy, true);
+      } else if (tag === 0x81 && ln >= 12 && bin[body] === 0x01) {
+        // ANEL DE PROGRESSO (spec 25 §2 revisado pelo RE do 322): 0x81 = 1 disco cf5 (count=1)
+        // recortado num SETOR em runtime (frac=valor/max, horário das 12h). NÃO é frame-sheet.
+        // Deve rodar mesmo inGroup (a fatia vive dentro de um 0x68). Sub 0x01 = geometria+frame,
+        // sub 0x5b = params (max @+4). Confirmado em 20 dials.
+        const c = body + 3; // conteúdo do sub-record 0x01
+        const c1len = u16le(bin, body + 1);
+        let ax = u16le(bin, c);
+        let ay = u16le(bin, c + 2);
+        const aw = u16le(bin, c + 4);
+        const ah = u16le(bin, c + 6);
+        const ftbl = findFrameTable(bin, body, c1len + 3, isAsset);
+        // Forma PURA-COMPACTA (371/364/366/372, RE 02/07): SEM frame-table — é um arco VETORIAL de
+        // cor sólida (não disco texturizado). Assinatura `01 ff` em content+11..12; cor RGB em
+        // content+8..10 (provado: 3 anéis coloridos sobre o bezel = img/371.png).
+        const compact = !ftbl && bin[c + 11] === 0x01 && bin[c + 12] === 0xff;
+        if ((ftbl || compact) && aw >= 1 && aw <= 480 && ah >= 1 && ah <= 480) {
+          if (ax === 0 && aw >= 200) ax = Math.floor((466 - aw) / 2); // disco/anel grande centrado
+          if (ay === 0 && ah >= 200) ay = Math.floor((466 - ah) / 2);
+          let max = 100;
+          let width: number | undefined;
+          let r = c1len + 3; // sub-records após o 0x01
+          while (r + 3 <= ln) {
+            const t = bin[body + r];
+            const l = u16le(bin, body + r + 1);
+            if (r + 3 + l > ln) break;
+            if (t === 0x5b && l >= 6) {
+              max = u16le(bin, body + r + 3 + 4) || 100;
+              if (l >= 13) width = bin[body + r + 3 + 12] || undefined; // largura da linha (0x5b+12)
+            }
+            r += 3 + l;
+          }
+          const color: [number, number, number] | undefined = compact
+            ? [bin[c + 8], bin[c + 9], bin[c + 10]]
+            : undefined;
+          // Arcos compactos GROSSOS (width>24, ex. 364 w=35) pertencem a um estilo/variante não
+          // exibido no preview ativo (364 é digital) — desenhá-los sobrepinta tudo. Só finos (anéis
+          // de progresso reais: 371 w=6, 366 w=18, 372 w=4/7) são emitidos.
+          if (!(compact && width !== undefined && width > 24)) {
+            out.push({
+              tag, x: ax, y: ay, xOff: c, yOff: c + 2, w: aw, h: ah,
+              assetOff: ftbl ? ftbl.base : 0, frameCount: 1, arc: { max, color, width },
+            });
+          }
+        }
+      } else if (!inGroup && SCENE_DRAWABLE_TAGS.has(tag) && ln >= 16 && bin[body] === 0x01) {
+        const x = ox + u16le(bin, body + 3);
+        const y = oy + u16le(bin, body + 5);
+        // frame-table `61 [count][base][ids]` dentro do corpo.
+        const ftbl = findFrameTable(bin, body, ln, isAsset);
+        const ft = ftbl ? ftbl.at : -1;
+        const count = ftbl ? ftbl.count : 0;
+        const base = ftbl ? ftbl.base : 0;
+        if (ft >= 0 && x <= 480 && y <= 480) {
+          const d: SceneDrawable = { tag, x, y, xOff: body + 3, yOff: body + 5, assetOff: base, frameCount: count };
+          // fonte de dado da COMPLICAÇÃO: attr-block `82` após o último `40 01 00` do corpo,
+          // id em `82+0x14` (RE §4/§5 — mesmo layout do widget de texto).
+          for (let k = ln - 3; k >= 6; k--) {
+            if (bin[body + k] === 0x40 && bin[body + k + 1] === 0x01 && bin[body + k + 2] === 0x00) {
+              d.hasAttr = true;
+              const b82 = k + 3;
+              if (b82 + 0x15 <= ln) {
+                const id = bin[body + b82 + 0x14];
+                if (id <= 0x8d) d.sourceId = id;
+              }
+              break;
+            }
+          }
+          // Dígito img_number SEM attr-block (spec 25 §7): a fonte fica inline no cabeçalho de 21
+          // bytes do corpo, em `body+0x10` (ex. 376/339 grandes dígitos: 0x08/0x09/0x0c/0x0d).
+          if (!d.hasAttr && count > 1) {
+            const s = bin[body + 0x10];
+            if (s >= 1 && s <= 0x8d) d.sourceId = s;
+          }
+          if (tag === 0x70) {
+            // pivô no trailer `05 05 00 01 [pivX][pivY]` (após a frame-table).
+            for (let k = ft + 9; k + 8 <= ln; k++) {
+              if (bin[body + k] === 5 && bin[body + k + 1] === 5 && bin[body + k + 2] === 0 && bin[body + k + 3] === 1) {
+                d.pivotX = u16le(bin, body + k + 4);
+                d.pivotY = u16le(bin, body + k + 6);
+                d.pivxOff = body + k + 4;
+                d.pivyOff = body + k + 6;
+                break;
+              }
+            }
+            // fonte de dado: `[src] 00 3c 00` (scale=60) antes da frame-table.
+            for (let k = 8; k + 4 <= ft; k++) {
+              if (bin[body + k] !== 0 && bin[body + k + 1] === 0 && bin[body + k + 2] === 0x3c && bin[body + k + 3] === 0) {
+                d.sourceId = bin[body + k];
+                break;
+              }
+            }
+          }
+          out.push(d);
+        }
+      }
+      i = body + ln;
+    }
+  };
+  walk(0x24, sceneEnd, 0, 0, false);
+  return out;
 }
 
 /** Parseia o `.bin` estruturado em camadas editáveis. Port de parse_structured. */
@@ -232,8 +397,96 @@ export function parseStructured(bin: Uint8Array): StructDial {
 
   const isAsset = (p: number) => assetMap.has(p);
 
-  let i = 0x30;
+  // CENA TLV (spec 26): fonte primária de imagens/ponteiros — sem o off-by-one do scan plano.
+  const sceneDrawables = scanSceneDrawables(bin, isAsset);
+  const sceneMode = sceneDrawables.length > 0;
+  // Frames do sheet do fundo (variantes normal/AOD/estilo) — não desenhar de novo por cima.
+  const bgFrameSet = new Set<number>(bgFrames.map(([o]) => o));
+  if (aod) bgFrameSet.add(aod[0]);
   let idx = 0;
+  if (sceneMode) {
+    for (const d of sceneDrawables) {
+      // ANEL DE PROGRESSO (0x81): tratado ANTES do guard de asset — o arco vetorial compacto
+      // (371/364/366/372) não tem asset (assetOff=0). Disco texturizado (322) usa o asset.
+      if (d.arc) {
+        const key = `arc,${d.x},${d.y}`;
+        if (placed.has(key)) continue;
+        placed.add(key);
+        const at = assetMap.get(d.assetOff);
+        layers.push(mkLayer({
+          kind: "arc", name: `Anel ${idx}`,
+          cf: at ? at[0] : 5, w: d.w ?? (at ? at[1] : 0), h: d.h ?? (at ? at[2] : 0),
+          assetOff: d.assetOff, assetLen: at ? at[3] : 0,
+          x: d.x, y: d.y, mock: "percent", arcMax: d.arc.max,
+          color: d.arc.color, arcWidth: d.arc.width,
+        }));
+        idx += 1;
+        continue;
+      }
+      if (usedAssets.has(d.assetOff)) continue; // fundo/frame já representado
+      // frame-sheet (count>1): complicação fill por frame-index. Desenhável se a fonte de dado
+      // decodificou (o frame do preview vem do valor mock). Atlas de dígito (10/11) fica com o
+      // caminho de texto; fonte desconhecida → não desenhar (evita frame errado por cima da arte).
+      const a = assetMap.get(d.assetOff);
+      if (!a) continue;
+      const [cf, w, h, alen] = a;
+      // DÍGITO GRANDE img_number (count 10/11) SEM attr-block: cada frame do atlas é um glifo 0-9,
+      // a fonte tens/units está inline (`body+0x10`). O caminho de imagem pula count 10/11 (fica
+      // p/ texto) e o scan-plano de texto só pega atlas COM attr-block (284/351/367) — então o
+      // atlas inline (376/339) não era desenhado. Emite como TEXTO (render escolhe o glifo pelo
+      // dígito via digitForSource). Atlas in-group (357) nunca vira SceneDrawable (0x68 é pulado),
+      // logo não há colisão com a grade nem com o anel de dias (0x30 top-level count=1).
+      if ((d.frameCount === 10 || d.frameCount === 11) && d.tag !== 0x70
+          && !d.hasAttr && d.sourceId !== undefined
+          && digitForSource(d.sourceId, 0, 0, 0) !== null) {
+        const key = `dig,${d.x},${d.y}`;
+        if (!placed.has(key)) {
+          placed.add(key);
+          layers.push(mkLayer({
+            kind: "text", name: `Dígito ${idx}`,
+            cf, w, h, assetOff: d.assetOff, assetLen: alen,
+            x: d.x, y: d.y, mock: mockFromSourceId(d.sourceId), sourceId: d.sourceId,
+          }));
+          idx += 1;
+        }
+        continue;
+      }
+      let sheetMock: MockKind = "none";
+      if (d.frameCount > 1) {
+        if (d.tag === 0x70 || d.frameCount === 10 || d.frameCount === 11) continue;
+        sheetMock = d.sourceId !== undefined ? mockFromSourceId(d.sourceId) : "none";
+        if (d.frameCount === 7 && sheetMock === "none") sheetMock = "weekday"; // sheet de 7 = dias
+        // Flip-clock: sheet numérico grande de 12/13 frames sem source = HORA (frames 0..12).
+        // Ex. 327 Digit Max (frame N = número N; frame=hora). watch_clock/img_number model.
+        if (sheetMock === "none" && (d.frameCount === 12 || d.frameCount === 13) && (w >= 200 || h >= 200)) {
+          sheetMock = "hour";
+        }
+        if (sheetMock === "none") continue;
+      }
+      if (d.tag !== 0x70 && bgFrameSet.has(d.assetOff)) continue; // variante do fundo
+      // dedupe por rect: nós irmãos = variantes (normal/AOD/estilo) do MESMO elemento.
+      // (NB: dedup por fonte p/ separar as 3 mãos foi testado e REGREDIU — no 371 as 3 mãos
+      // reusam UM sprite longo de 466px; desenhar 3 mãos longas idênticas fica pior que 1.)
+      const key = `${d.tag},${d.x},${d.y},${w},${h}`;
+      if (placed.has(key)) continue;
+      placed.add(key);
+      const kind: LayerKind = d.tag === 0x70 ? "pointer" : "image";
+      layers.push(mkLayer({
+        kind,
+        name: kind === "pointer" ? `Ponteiro ${idx}` : `Imagem ${idx}`,
+        cf, w, h, assetOff: d.assetOff, assetLen: alen,
+        x: d.x, y: d.y,
+        pivotX: d.pivotX ?? 0, pivotY: d.pivotY ?? 0,
+        xOff: d.xOff, yOff: d.yOff, pivxOff: d.pivxOff, pivyOff: d.pivyOff,
+        mock: kind === "pointer" && d.sourceId !== undefined ? pointerRole(d.sourceId) : sheetMock,
+        sourceId: d.sourceId,
+        frames: d.frameCount > 1 ? d.frameCount : undefined,
+      }));
+      idx += 1;
+    }
+  }
+
+  let i = 0x30;
   while (i + 8 < firstAsset) {
     if (bin[i] === 0x61 && (bin[i + 1] === 0x01 || bin[i + 1] === 0x0a || bin[i + 1] === 0x0b) && bin[i + 2] === 0) {
       const ptr = u32le(bin, i + 3);
@@ -329,6 +582,43 @@ export function parseStructured(bin: Uint8Array): StructDial {
           mock = "seconds";
         }
 
+        // Correção OFF-BY-ONE do atlas de dígito (spec 25 §7 / RE 282/284/302/351): o attr-block do
+        // elemento fica IMEDIATAMENTE ANTES da sua frame-table `61 0a/0b`, mas o findDelim procura
+        // pra FRENTE e pega o `82`/`40 01 00` do PRÓXIMO elemento → X/Y e fonte do vizinho (número
+        // grande do 282 virava minuto; hora sumia em 334/307/320/359/290). A fonte correta é o
+        // byte em `i-5`, X em `i-18`, Y em `i-16`. Assinatura: wrapper `0x60`/`0x30` em i-24 +
+        // `00 01` em i-22..21 (ou o marcador `01 ff` em i-7 da variante colorida cf13). Verificado
+        // em 13 dials: `i-5` é sempre a fonte certa; `forward` é sistematicamente deslocado.
+        const precAttr = i >= 25 && (bin[i - 24] === 0x60 || bin[i - 24] === 0x30)
+          && bin[i - 22] === 0x00 && bin[i - 21] === 0x01 && bin[i - 5] >= 1 && bin[i - 5] <= 0x8d;
+        // Path colorido cf13 (`01 ff` em i-7): sempre corrige (validado — 351/284). Path `precAttr`
+        // amplo mexe X/Y de records onde o forward acertou → só dispara quando o forward NÃO achou
+        // fonte (o bug do "hora sumida": 334/307/320/359/290) — não regride quem já funcionava.
+        const cf13Colored = i >= 18 && bin[i - 7] === 0x01 && bin[i - 6] === 0xff;
+        if (kind === "text" && (cf13Colored || (sourceId === undefined && precAttr))) {
+          x = u16le(bin, i - 18);
+          y = u16le(bin, i - 16);
+          const s = bin[i - 5];
+          if (s >= 1 && s <= 0x8d) {
+            sourceId = s;
+            mock = mockFromSourceId(s);
+          }
+        }
+
+        // Cor do elemento (spec 25 §5): no corpo `0x60`, `[RGB] 01 ff [src]` precede o `61 0a 00`
+        // do scan em 10 bytes. Tinge a máscara A8 cf=13 (colorida em runtime). Validado nas cores
+        // conhecidas de 284/288/298/303 (branco p/ dials de dígito branco).
+        let color: [number, number, number] | undefined;
+        if (kind === "text" && cf === 13 && i >= 10 && bin[i - 7] === 0x01 && bin[i - 6] === 0xff) {
+          const rgb: [number, number, number] = [bin[i - 10], bin[i - 9], bin[i - 8]];
+          if (rgb[0] + rgb[1] + rgb[2] > 0) color = rgb;
+        }
+
+        // Em sceneMode, imagens/ponteiros vêm da cena TLV — o scan plano só contribui TEXTO.
+        if (sceneMode && kind !== "text") {
+          i += 1;
+          continue;
+        }
         // dedup normal/AOD
         const key = `${ptr},${x},${y}`;
         if (kind !== "other") {
@@ -345,7 +635,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
           : `Camada ${idx} (não-posicionada)`;
         layers.push(mkLayer({
           kind, name: kname, cf, w, h, assetOff: ptr, assetLen: alen,
-          x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId,
+          x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId, color,
         }));
         idx += 1;
       }
@@ -355,8 +645,21 @@ export function parseStructured(bin: Uint8Array): StructDial {
 
   // GRUPO-DE-VALOR: um layer de texto por grupo 0x68 com filhos 0x60.
   const gks = [...digitGroups.keys()].sort((a, b) => a - b);
+  // Dials DOT-MATRIX (357 Silhouette 96 células, 281 Metaball) têm dezenas de grupos do MESMO
+  // tamanho numa GRADE — não são um relógio de campos (h/m/s), são um display de matriz onde o
+  // firmware acende UMA célula pelo horário. Não modelamos; emitir "12" em cada célula é pior que
+  // nada. Detecta a grade por histograma de tamanho (≥8 grupos idênticos) — assim o relógio de
+  // tamanho único de dials mistos (325 Metric) NÃO é suprimido.
+  const sizeHist = new Map<string, number>();
+  for (const gk of gks) {
+    const gr = groups[gk];
+    const k = `${gr[3]}x${gr[4]}`;
+    sizeHist.set(k, (sizeHist.get(k) ?? 0) + 1);
+  }
   const gplaced = new Set<string>();
   for (const gk of gks) {
+    const gr = groups[gk];
+    if ((sizeHist.get(`${gr[3]}x${gr[4]}`) ?? 0) >= 8) continue; // célula de matriz → não emite
     const kids = digitGroups.get(gk)!;
     if (kids.length === 0) continue;
     const [src0, ptr] = kids[0];

@@ -6,6 +6,7 @@ export type LayerKind =
   | "image" // imagem estática posicionada (record 61 01 00)
   | "pointer" // ponteiro (record 61 01 00, f3==0x70) — rotaciona em runtime
   | "text" // widget de texto/número (record 61 0a 00) — atlas de glifos
+  | "arc" // anel de progresso (0x81): disco cf5 recortado num setor = valor/max (spec 25 §2)
   | "other"; // asset não posicionado (thumb/atlas) — não editável por geometria
 
 /**
@@ -58,6 +59,14 @@ export interface Layer {
   mock: MockKind;
   /** Id da fonte de dado do firmware (0x00–0x8d), se for texto/complicação/ponteiro. */
   sourceId?: number;
+  /** Nº de frames do frame-sheet (complicação fill por frame-index); 1/undefined = imagem única. */
+  frames?: number;
+  /** Cor RGB do elemento (tinge máscara A8 cf=13, colorida em runtime). undefined = branco. */
+  color?: [number, number, number];
+  /** Anel de progresso (kind "arc"): denominador do valor (setor = valor/arcMax × 360°). */
+  arcMax?: number;
+  /** Largura da linha do arco vetorial compacto (0x5b+12); undefined = anel cheio/texturizado. */
+  arcWidth?: number;
 }
 
 /** Dial estruturado parseado + editável. */

@@ -34,6 +34,29 @@ npm test           # vitest: roundtrip byte-exato nos 103 dials + decode + rende
 - **decode**: todo asset cf=4/5/24 descomprime exato em `w*h*bpp`; LZ4 round-trip.
 - **render**: `renderAt` preserva o fundo (invariante blend-só-adiciona).
 
+**Oráculo visual** (`/compare.html` no dev server): renderiza os 103 dials da loja @ 10:12 pelo
+pipeline real do app e compara pixel-a-pixel com os PNGs oficiais (corpus symlinkado em
+`public/corpus`). Tabela ordenável com render/asset lado a lado; dados brutos em `window.results`.
+É o **guard de regressão** de qualquer mudança em `parse.ts`/`render.ts` (estado 02/07:
+**72 bons / 25 médios / 2 ruins, diff médio 6.4%**). Os 2 ruins: 282 (animação tick-driven,
+intratável por thumbnail estático) e 284 (dígitos-arte ~31%, visualmente quase idêntico).
+
+### Mecanismos de render decodificados (cruzados com o SDK Actions + firmware RE)
+- **Frame-sheet / flip-clock:** drawable com `61 [count>1][base]` → o valor seleciona 1 frame
+  (`frame=valor` p/ dígito/enum, `(count−1)·val/100` p/ %). Ex. 327 (hora 0–12).
+- **Anel de progresso (`0x81`):** 1 disco (`count==1`) recortado num **setor** (`blendSector`,
+  `frac=valor/max`) — corrige a leitura "frame-sheet" da spec 25 §2. 20 dials.
+- **cf=13 (máscara A8):** tingida pela cor RGB do elemento (`body+11`); dígito único por fonte
+  tens/units (spec 25 §1.1). Atlas segue a ordem do pool (glifos de tamanho variável).
+
+## Parser de camadas = cena TLV (spec 26)
+
+Imagens e ponteiros vêm de `scanSceneDrawables` (walker da cena `0x20→0x21→folhas`, spec 26 =
+SDK Actions): corpo `01 xx 00 [X][Y] … 61 [count][base][ids] [05 05 00 01 pivX pivY]`, com
+X/Y = canto sup-esq e centro de rotação do ponteiro = **(X+pivX, Y+pivY)**. O scan plano de
+`61 01 00` era **off-by-one entre nós adjacentes** (ver spec 24 §24.4.5) e ficou só para TEXTO
+e como fallback de `.bin` sem envelope-cena.
+
 ## Arquitetura
 
 ```

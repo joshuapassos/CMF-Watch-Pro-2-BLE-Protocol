@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wfweb — simulação (tempo + dados)</title>
+    <style>
+      body { margin: 0; background: #0e1013; color: #e6e6e6; font: 13px/1.5 system-ui, sans-serif; display: flex; gap: 20px; padding: 16px; }
+      #left { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+      canvas { width: 466px; height: 466px; border-radius: 50%; background: #000; box-shadow: 0 0 40px #000; }
+      #hud { font-variant-numeric: tabular-nums; color: #9fb; white-space: pre; font-family: ui-monospace, monospace; font-size: 12px; }
+      #ctl { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      button, select, input { background: #1c1f26; color: #e6e6e6; border: 1px solid #333; border-radius: 6px; padding: 6px 10px; font: inherit; }
+      button { cursor: pointer; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      #asset { width: 233px; height: 233px; border: 1px solid #333; border-radius: 50%; }
+      #right { color: #89a; }
+      h3 { margin: 4px 0; color: #ff6a3d; font-size: 13px; }
+      label { color: #9aa; }
+    </style>
+  </head>
+  <body>
+    <div id="left">
+      <canvas id="cv" width="466" height="466"></canvas>
+      <div id="hud">carregando…</div>
+      <div id="ctl">
+        <select id="dial"></select>
+        <button id="play">⏸ pausar</button>
+        <label>vel <input id="speed" type="range" min="1" max="240" value="60" style="width:120px" /> <span id="spd">60×</span></label>
+      </div>
+      <div class="row">
+        <label>dados <input id="autoData" type="checkbox" checked /> variar auto</label>
+      </div>
+    </div>
+    <div id="right">
+      <h3>asset oficial (referência)</h3>
+      <img id="asset" alt="asset" />
+      <div id="info"></div>
+    </div>
+    <script type="module" src="/src/sim.ts"></script>
+  </body>
+</html>

@@ -5,7 +5,7 @@ import { renderAt, decodeLayer, type JpegCache } from "../codec/render.js";
 import { encodeInPlace, setLayerImageRaster, isPhotoDial, buildPhotoDial, FULL_DIM, THUMB_DIM } from "../codec/encode.js";
 import { rebuildContainer, validateContainer } from "../codec/scene.js";
 import { buildNotation, applyNotation } from "../codec/notation.js";
-import { MOCK_ALL, mockLabel, DATA_SOURCES, mockFromSourceId } from "../codec/mock.js";
+import { MOCK_ALL, mockLabel, DATA_SOURCES, mockFromSourceId, pointerRole } from "../codec/mock.js";
 import { simEnv } from "../codec/mock.js";
 import type { Layer, MockKind, Notation, StructDial } from "../codec/types.js";
 import { drawToCanvas, pointerToCanvas } from "./canvas.js";
@@ -157,16 +157,43 @@ export class App {
     const sel = this.dial.layers[this.selected];
     if (sel && !sel.deleted && sel.kind !== "background") {
       const ctx = this.canvas.getContext("2d")!;
-      const ox = sel.kind === "image" || sel.kind === "pointer" ? sel.x - sel.pivotX : sel.x;
-      const oy = sel.kind === "image" || sel.kind === "pointer" ? sel.y - sel.pivotY : sel.y;
       ctx.save();
       ctx.setLineDash([6, 4]);
       ctx.lineWidth = 2;
       ctx.strokeStyle = "#4da3ff";
-      ctx.strokeRect(ox + 0.5, oy + 0.5, Math.max(sel.w, 6), Math.max(sel.h, 6));
+      if (sel.kind === "pointer") {
+        // ponteiro é rotacionado em runtime — a borda acompanha (mesmo centro+ângulo do render).
+        const { angle, cx, cy } = this.pointerXform(sel, hh, mm, ss);
+        ctx.translate(cx, cy);
+        ctx.rotate((angle * Math.PI) / 180);
+        ctx.translate(-sel.pivotX, -sel.pivotY);
+        ctx.strokeRect(0.5, 0.5, sel.w, sel.h);
+      } else {
+        const ox = sel.kind === "image" ? sel.x - sel.pivotX : sel.x;
+        const oy = sel.kind === "image" ? sel.y - sel.pivotY : sel.y;
+        ctx.strokeRect(ox + 0.5, oy + 0.5, Math.max(sel.w, 6), Math.max(sel.h, 6));
+      }
       ctx.restore();
     }
     this.clock.textContent = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  }
+
+  /** Centro + ângulo de rotação de um ponteiro (espelha render.ts::renderAt) p/ a borda de seleção. */
+  private pointerXform(l: Layer, hh: number, mm: number, ss: number): { angle: number; cx: number; cy: number } {
+    const angHour = (hh % 12) * 30 + mm * 0.5, angMin = mm * 6 + ss * 0.1, angSec = ss * 6;
+    const role = l.sourceId !== undefined ? pointerRole(l.sourceId) : "none";
+    const ptrs = this.dial!.layers.filter((p) => p.visible && !p.deleted && p.kind === "pointer").slice().sort((a, b) => a.h - b.h);
+    const n = ptrs.length, i = ptrs.indexOf(l);
+    let angle: number;
+    if (role === "hour") angle = angHour;
+    else if (role === "minute") angle = angMin;
+    else if (role === "seconds") angle = angSec;
+    else if (n <= 1) angle = angMin;
+    else if (i === 0) angle = angHour;
+    else if (i + 1 === n) angle = angSec;
+    else angle = angMin;
+    const hasPiv = l.pivotX !== 0 || l.pivotY !== 0;
+    return { angle, cx: hasPiv ? l.x + l.pivotX : 233, cy: hasPiv ? l.y + l.pivotY : 233 };
   }
 
   // ---- Undo/redo: snapshot = clone raso do array de camadas (cobre add/delete/reorder/campos) ----

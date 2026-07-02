@@ -73,6 +73,8 @@ export interface Layer {
   arcWidth?: number;
   /** Override de frame p/ preview (scrubber do editor); undefined = frame vem do valor mock. */
   previewFrame?: number;
+  /** Marcada p/ remoção — some do preview e é omitida no export (rebuild do container). */
+  deleted?: boolean;
 }
 
 /** Dial estruturado parseado + editável. */

@@ -3,8 +3,9 @@
 // A cena é um TLV aninhado limpo `[tag u8][len u16 LE][corpo]`. Containers (0x20/0x21/0x22/0x68)
 // serializam os filhos; folhas (0x30/0x70/0x80/0x81/0x86…) carregam o corpo cru. O firmware EXIGE
 // que o corpo @0x24 comece com o envelope `0x20` (senão grava erro 0x0a).
-import { u16le, writeU16le, writeU32le } from "./bytes.js";
+import { u16le, u32le, writeU16le, writeU32le } from "./bytes.js";
 import { scanAssets } from "./parse.js";
+import type { StructDial } from "./types.js";
 
 export interface SceneNode {
   tag: number;
@@ -159,6 +160,68 @@ export function buildContainerRaw(
   out.set(sceneBytes, 0x24);
   out.set(poolBytes, firstAsset);
   return out;
+}
+
+/**
+ * REBUILD do `.bin` OMITINDO camadas marcadas `deleted` (delete real, muda o footprint).
+ * Como os ponteiros de asset na cena são offsets ABSOLUTOS, remover um nó encurta a cena e
+ * desloca o pool — então TODO ponteiro é reajustado por um delta uniforme (`novoFirstAsset −
+ * firstAsset`). O pool inteiro é mantido (assets órfãos do nó removido são inofensivos: `len`
+ * limita a leitura e nenhum record aponta pra eles). Detecção de ponteiro: `u32` que casa EXATO
+ * com um offset de asset conhecido (offsets são ≥ firstAsset, grandes; coords são pequenas).
+ * Retorna o novo `.bin` (validado por validateContainer no caller).
+ */
+export function rebuildContainer(dial: StructDial): Uint8Array {
+  const raw = dial.raw;
+  const perDialId = raw.length >= 4 ? u32le(raw, 0) : 0;
+  const idWord0 = raw.length >= 0x24 ? u32le(raw, 0x20) : 0;
+  const assets = scanAssets(raw);
+  if (assets.length === 0 || raw[0x24] !== 0x20) return raw.slice(); // sem cena → nada a fazer
+  const firstAsset = assets.reduce((m, a) => Math.min(m, a[0]), raw.length);
+  const oldOffs = new Set<number>(assets.map((a) => a[0]));
+
+  // chave (assetOff,x,y) das camadas marcadas p/ deletar.
+  const del = new Set(dial.layers.filter((l) => l.deleted).map((l) => `${l.assetOff},${l.x},${l.y}`));
+  if (del.size === 0) return raw.slice();
+
+  // chave de um nó-folha drawable: base da frame-table + X/Y do corpo.
+  const leafKey = (n: SceneNode): string | null => {
+    const b = n.leaf;
+    if (b.length < 9 || b[0] !== 0x01) return null;
+    for (let k = 6; k + 9 <= b.length; k++) {
+      if (b[k] !== 0x61) continue;
+      const c = u16le(b, k + 1);
+      if (c < 1 || c > 130) continue;
+      const base = u32le(b, k + 3);
+      if (oldOffs.has(base)) return `${base},${u16le(b, 3)},${u16le(b, 5)}`;
+    }
+    return null;
+  };
+
+  const prune = (nodes: SceneNode[]): SceneNode[] =>
+    nodes.filter((n) => {
+      if (n.children.length > 0) {
+        n.children = prune(n.children);
+        return true;
+      }
+      const key = leafKey(n);
+      return !(key !== null && del.has(key));
+    });
+
+  const roots = prune(parseScene(raw, 0x24, firstAsset));
+  const parts = roots.map(serializeScene);
+  const newScene = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+  { let o = 0; for (const p of parts) { newScene.set(p, o); o += p.length; } }
+
+  // reajusta os ponteiros absolutos pelo delta (cena encolheu → pool moveu).
+  const delta = (0x24 + newScene.length) - firstAsset;
+  if (delta !== 0) {
+    for (let i = 0; i + 4 <= newScene.length; i++) {
+      const v = u32le(newScene, i);
+      if (oldOffs.has(v)) { writeU32le(newScene, i, v + delta); i += 3; }
+    }
+  }
+  return buildContainerRaw(perDialId, dial.name, idWord0, newScene, raw.slice(firstAsset));
 }
 
 /** Monta um dial estruturado DO ZERO: header + envelope-cena + pool. */

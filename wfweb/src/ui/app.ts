@@ -3,6 +3,7 @@ import "./styles.css";
 import { parseStructured, setAod } from "../codec/parse.js";
 import { renderAt, decodeLayer, type JpegCache } from "../codec/render.js";
 import { encodeInPlace, setLayerImageRaster, isPhotoDial, buildPhotoDial, FULL_DIM, THUMB_DIM } from "../codec/encode.js";
+import { rebuildContainer, validateContainer } from "../codec/scene.js";
 import { buildNotation, applyNotation } from "../codec/notation.js";
 import { MOCK_ALL, mockLabel, DATA_SOURCES, mockFromSourceId } from "../codec/mock.js";
 import { simEnv } from "../codec/mock.js";
@@ -156,7 +157,7 @@ export class App {
     if (!this.dial) return "[]";
     return JSON.stringify(this.dial.layers.map((l) => [
       l.assetOff, l.x, l.y, l.pivotX, l.pivotY, l.mock, l.sourceId ?? null,
-      l.color ?? null, l.arcMax ?? null, l.previewFrame ?? null, l.visible ? 1 : 0,
+      l.color ?? null, l.arcMax ?? null, l.previewFrame ?? null, l.visible ? 1 : 0, l.deleted ? 1 : 0,
     ]));
   }
 
@@ -172,7 +173,7 @@ export class App {
       l.x = r[1] as number; l.y = r[2] as number; l.pivotX = r[3] as number; l.pivotY = r[4] as number;
       l.mock = r[5] as Layer["mock"]; l.sourceId = (r[6] as number) ?? undefined;
       l.color = (r[7] as [number, number, number]) ?? undefined; l.arcMax = (r[8] as number) ?? undefined;
-      l.previewFrame = (r[9] as number) ?? undefined; l.visible = r[10] === 1;
+      l.previewFrame = (r[9] as number) ?? undefined; l.visible = r[10] === 1; l.deleted = r[11] === 1;
       out.push(l);
     }
     out.push(...pool);
@@ -259,6 +260,7 @@ export class App {
     this.layerList.innerHTML = "";
     if (!d) return;
     d.layers.forEach((l, i) => {
+      if (l.deleted) return; // camada removida — some da lista (export faz rebuild sem ela)
       const li = document.createElement("li");
       if (i === this.selected) li.classList.add("sel");
       if (!l.visible) li.classList.add("hidden-layer");
@@ -319,6 +321,7 @@ export class App {
       <div class="field"><label>Dado (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visível</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
       <div class="field full"><button class="btn wide" id="fReplace">🖼 Trocar imagem…</button></div>
+      <div class="field full"><button class="btn wide danger" id="fDelete">🗑 Deletar camada</button></div>
     `;
     this.inspBody.innerHTML = "";
     this.inspBody.appendChild(frag);
@@ -402,6 +405,13 @@ export class App {
       this.refreshJson();
     });
     $("fReplace").addEventListener("click", () => this.replaceLayerImage(this.selected));
+    $("fDelete").addEventListener("click", () => {
+      this.pushUndo();
+      l.deleted = true;
+      this.selected = -1;
+      this.refreshAll();
+      this.status(`Camada "${l.name}" removida. Export fará rebuild do container (Ctrl+Z desfaz).`, "ok");
+    });
   }
 
   // ---- Barra de assets ----
@@ -588,9 +598,21 @@ export class App {
   private onExport(): void {
     if (!this.dial) return;
     try {
-      const bytes = encodeInPlace(this.dial);
+      const hasDeleted = this.dial.layers.some((l) => l.deleted);
+      let bytes: Uint8Array;
+      if (hasDeleted) {
+        // REBUILD: camadas removidas mudam o footprint → reconstrói cena+pool e reajusta ponteiros.
+        const inPlace = encodeInPlace(this.dial); // aplica geometria/cor/fonte primeiro
+        bytes = rebuildContainer({ ...this.dial, raw: inPlace });
+        validateContainer(bytes); // invariante do firmware (1º byte 0x20, lengths fecham)
+      } else {
+        bytes = encodeInPlace(this.dial);
+      }
       downloadBytes(bytes, outName(this.dial.perDialId, this.dial.name));
-      this.status(`Exportado (${bytes.length}B). Instale pelo app/core (pipeline 0x9075).`, "ok");
+      this.status(
+        `Exportado (${bytes.length}B${hasDeleted ? ", rebuild ✓ validado" : ""}). Instale via pipeline 0x9075.`,
+        "ok",
+      );
     } catch (err) {
       this.status("Falha ao exportar: " + (err as Error).message, "err");
     }

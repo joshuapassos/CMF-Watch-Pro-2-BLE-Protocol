@@ -221,7 +221,7 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
   // como o seletor do firmware: frame = (count−1)·val/100 — os valores casam com os thumbnails
   // oficiais: 80% meta/bateria, TUE, JUL, 68 BPM etc.)
   for (const layer of dial.layers) {
-    if (!layer.visible || layer.kind === "other" || layer.kind === "text" || layer.kind === "pointer") continue;
+    if (!layer.visible || layer.deleted || layer.kind === "other" || layer.kind === "text" || layer.kind === "pointer") continue;
     // ANEL DE PROGRESSO: disco recortado num setor = valor-mock / arcMax (spec 25 §2, RE do 322).
     if (layer.kind === "arc") {
       const raw = mockSample(layer.mock, hh, mm, ss);
@@ -262,7 +262,7 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
   const angHour = (hh % 12) * 30 + mm * 0.5;
   const angMin = mm * 6 + ss * 0.1;
   const angSec = ss * 6;
-  const ptrs = dial.layers.filter((l) => l.visible && l.kind === "pointer").slice();
+  const ptrs = dial.layers.filter((l) => l.visible && !l.deleted && l.kind === "pointer").slice();
   ptrs.sort((a, b) => a.h - b.h);
   const n = ptrs.length;
   ptrs.forEach((l, i) => {
@@ -286,7 +286,7 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
 
   // TEXTO/NÚMERO: desenha o valor-mock com os glifos reais do atlas.
   for (const l of dial.layers) {
-    if (!l.visible || l.kind !== "text") continue;
+    if (!l.visible || l.deleted || l.kind !== "text") continue;
     // Fonte de dígito ÚNICO (tens/units, spec 25 §1.1) → um dígito; senão o valor-mock inteiro.
     const single = l.sourceId !== undefined ? digitForSource(l.sourceId, hh, mm, ss) : null;
     const s = single ?? mockSample(l.mock, hh, mm, ss);

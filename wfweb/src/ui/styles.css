@@ -214,3 +214,6 @@ h2 {
 .status.ok { color: var(--ok); }
 .status.err { color: var(--err); }
 .status code { color: var(--fg); background: var(--panel2); padding: 1px 4px; border-radius: 4px; }
+
+.btn.danger { color: #ff7a6b; border-color: #5a2a2a; }
+.btn.danger:hover { background: #3a1e1e; border-color: #ff5b5b; }

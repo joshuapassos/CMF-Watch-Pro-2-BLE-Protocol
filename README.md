@@ -617,8 +617,9 @@ with `61 [01|0a] 00` + `u32 asset_ptr` (absolute file offset of the asset).
   and the **source id is a `u8` at `+0x14`** (also `relX@+0x07 s16`, `relY@+0x09 s16`, `anchor@+0x0C/0E`,
   `mode@+0x15`, `frame-count@+0x1A`). Anchor < 0 = align to the parent's edge. 🔎 The firmware resolves
   the id through a 142-entry getter table at `0x101f371c` (each calls `ux2sys_get(type)`). Common ids
-  (§16): `0x0b` hour, `0x0f` minute, `0x16` month, `0x18` weekday, `0x13` AM/PM, `0x19` HR,
-  `0x1b` battery %, `0x24` temperature, `0x36` steps, `0x70/71/72` hand angles, `0x25–27` goal %.
+  (§16): `0x07` hour, `0x0b` minute, `0x0f` second, `0x16` month, `0x18` weekday, `0x13` AM/PM,
+  `0x19` HR, `0x1b` battery %, `0x24` temperature, `0x36` steps, `0x70/71/72` hand angles,
+  `0x25–27` goal %. (This matches the `0x07:0x0b:0x0f` = HH:MM:SS group example below.)
 - **Group node** (`0x68`): nests its children inside its own TLV body (`0x60` = value/text,
   `0x30` = static); each `0x60` carries its source id at `data+16`. E.g. a group `0x07:0x0b:0x0f` =
   HH:MM:SS clock. TLV element parser = `0x100db55c` (jump table indexed by `tag−0x70`).
@@ -743,10 +744,11 @@ phone/BLE** — they need a firmware mod, which is out of scope here:
 
 Not needed to build a BLE client — included for completeness. The firmware's dial renderer binds each
 complication slot to a numeric **getter id** (142-entry dispatch table). Selected ids:
-`0x0a` combined clock angle, `0x0b` minute, `0x0f` second, `0x18` day-of-week, `0x19` heart rate,
-`0x1b` battery %, `0x24` temperature, `0x36` steps, `0x70/0x71/0x72` hour/minute/second hand angle,
-`0x25–0x27` goal %. Ring/arc complications index a pre-rendered **frame sheet** (e.g. 50 % = frame 50
-of 100), not a per-pixel arc — which is why custom structured dials need the baked RES pack (§11.5).
+`0x07` hour, `0x0a` combined clock angle, `0x0b` minute, `0x0f` second, `0x18` day-of-week,
+`0x19` heart rate, `0x1b` battery %, `0x24` temperature, `0x36` steps,
+`0x70/0x71/0x72` hour/minute/second hand angle, `0x25–0x27` goal %. Ring/arc complications index a
+pre-rendered **frame sheet** (e.g. 50 % = frame 50 of 100), not a per-pixel arc — the frames are baked
+into the `.bin` you send (§11.5), so no external RES pack is needed.
 
 ---
 

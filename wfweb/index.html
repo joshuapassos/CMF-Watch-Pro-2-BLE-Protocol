@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wfweb — editor de watchface CMF</title>
+  </head>
+  <body>
+    <header id="topbar">
+      <strong class="brand">wfweb</strong>
+      <span class="sub">editor de watchface · CMF Watch Pro 2</span>
+      <span class="spacer"></span>
+      <label class="btn file">
+        📂 Abrir .bin<input id="openBin" type="file" accept=".bin" hidden />
+      </label>
+      <label class="btn file">
+        🖼 Novo photo-dial<input id="openPhoto" type="file" accept="image/*" hidden />
+      </label>
+      <button id="btnExport" class="btn" disabled>💾 Exportar .bin</button>
+      <button id="btnPlay" class="btn" disabled>▶</button>
+      <span id="clock" class="clock">10:08:30</span>
+      <label class="chk"><input id="chkAod" type="checkbox" disabled /> AOD</label>
+    </header>
+
+    <main id="layout">
+      <aside id="left">
+        <h2>Camadas</h2>
+        <ul id="layerList" class="layers"></ul>
+      </aside>
+
+      <section id="center">
+        <div id="stage">
+          <canvas id="preview" width="466" height="466"></canvas>
+          <div id="hover" class="hover"></div>
+        </div>
+        <div id="assetBar" class="assetbar"></div>
+      </section>
+
+      <aside id="right">
+        <div id="inspector">
+          <h2>Inspector</h2>
+          <div id="inspBody" class="insp-empty">Selecione uma camada.</div>
+        </div>
+        <div id="jsonPane">
+          <h2>Notação (JSON)</h2>
+          <div id="jsonError" class="json-error" hidden></div>
+          <textarea id="jsonText" spellcheck="false" placeholder="Abra um .bin para ver a notação…"></textarea>
+          <button id="btnApplyJson" class="btn wide" disabled>Aplicar notação</button>
+        </div>
+      </aside>
+    </main>
+
+    <div id="status" class="status">Pronto. Abra um <code>.bin</code> de watchface para começar.</div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

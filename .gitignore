@@ -1,0 +1,84 @@
+# ─────────────────────────────────────────────────────────────
+# macOS
+# ─────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ─────────────────────────────────────────────────────────────
+# Python (cmftool/)
+# ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# ─────────────────────────────────────────────────────────────
+# Rust (cmfwatch/core-rust/)
+# ─────────────────────────────────────────────────────────────
+target/
+**/*.rs.bk
+
+# ─────────────────────────────────────────────────────────────
+# Gradle / Android (cmfwatch/android/)
+# ─────────────────────────────────────────────────────────────
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+
+# Native libs gerados pelo build do core Rust (regerar via cargo)
+cmfwatch/core-rust/android-libs/
+
+# ─────────────────────────────────────────────────────────────
+# Scratch da engenharia reversa (regenerável — não versionar)
+# ─────────────────────────────────────────────────────────────
+work/
+dfa_assets/
+
+# ─────────────────────────────────────────────────────────────
+# Artefatos / capturas grandes (raiz e demais dirs)
+# ─────────────────────────────────────────────────────────────
+# APKs / bundles baixados
+*.apkm
+*.apk
+*.xapk
+
+# Bug reports e capturas BLE
+bugreport*.zip
+bugreport*/
+*.btsnoop*
+btsnoop*
+
+# Imagens / vídeo de captura
+*.jpg
+*.jpeg
+
+# Bancos de dados extraídos do device
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# ─────────────────────────────────────────────────────────────
+# Editores / ferramentas
+# ─────────────────────────────────────────────────────────────
+*.swp
+*~
+.vscode/

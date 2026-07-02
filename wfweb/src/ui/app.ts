@@ -123,8 +123,46 @@ export class App {
     this.buildLayerList();
     this.buildInspector();
     this.buildAssetBar();
+    this.buildSimPanel();
     this.refreshJson();
     this.render();
+  }
+
+  /** Painel de VALORES DE PREVIEW (estilo editor Mi Band): setar hora + dados p/ ver dígitos,
+   *  anéis e complicações reagirem, sem depender do play. Escreve simSeconds/simEnv. */
+  private buildSimPanel(): void {
+    const body = document.getElementById("simBody");
+    if (!body || !this.dial) return;
+    const t = Math.floor(this.simSeconds);
+    const rows: Array<[string, number, number, number, (v: number) => void, () => string]> = [
+      ["Hora do dia", 0, 12 * 3600 - 1, t, (v) => (this.simSeconds = v), () => {
+        const s = Math.floor(this.simSeconds); return `${String(Math.floor(s / 3600) % 24).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+      }],
+      ["% de meta / bateria", 0, 100, simEnv.percent, (v) => { simEnv.percent = v; simEnv.battery = v; }, () => `${simEnv.percent}%`],
+      ["Passos", 0, 15000, simEnv.steps, (v) => (simEnv.steps = v), () => String(simEnv.steps)],
+      ["Freq. cardíaca", 40, 200, simEnv.bpm, (v) => (simEnv.bpm = v), () => `${simEnv.bpm} bpm`],
+      ["Dia da semana", 0, 6, simEnv.weekday, (v) => (simEnv.weekday = v), () => ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"][simEnv.weekday]],
+    ];
+    body.innerHTML = "";
+    for (const [label, min, max, val, set, fmt] of rows) {
+      const row = document.createElement("div");
+      row.className = "simrow";
+      const lab = document.createElement("label");
+      lab.textContent = label;
+      const out = document.createElement("span");
+      out.className = "simval";
+      out.textContent = fmt();
+      const sl = document.createElement("input");
+      sl.type = "range";
+      sl.min = String(min); sl.max = String(max); sl.value = String(val);
+      sl.addEventListener("input", () => {
+        set(parseInt(sl.value, 10) | 0);
+        out.textContent = fmt();
+        this.render();
+      });
+      row.append(lab, sl, out);
+      body.appendChild(row);
+    }
   }
 
   // ---- Painel de camadas ----
@@ -174,6 +212,7 @@ export class App {
       ${isDataBound ? `<div class="field"><label>Fonte${persistNote}</label><select id="fSrc"></select></div>` : ""}
       ${hasColor ? `<div class="field"><label>Cor${l.colorOff === undefined ? " (só preview)" : ""}</label><input type="color" id="fColor" value="${hex}"></div>` : ""}
       ${isArc ? `<div class="field"><label>Máx (anel)</label><input type="number" id="fMax" value="${l.arcMax ?? 100}"></div>` : ""}
+      ${l.frames && l.frames > 1 && !isArc ? `<div class="field"><label>Frame</label><input type="range" id="fFrame" min="0" max="${l.frames - 1}" value="${l.previewFrame ?? 0}"><span id="fFrameV">${l.previewFrame ?? "auto"}</span></div>` : ""}
       <div class="field"><label>Dado (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visível</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
       <div class="field full"><button class="btn wide" id="fReplace">🖼 Trocar imagem…</button></div>
@@ -222,6 +261,16 @@ export class App {
     bindNum("fPX", (v) => (l.pivotX = v));
     bindNum("fPY", (v) => (l.pivotY = v));
     if (isArc) bindNum("fMax", (v) => (l.arcMax = v || 100));
+
+    const frameSl = document.getElementById("fFrame") as HTMLInputElement | null;
+    if (frameSl) {
+      frameSl.addEventListener("input", () => {
+        l.previewFrame = parseInt(frameSl.value, 10) | 0;
+        const v = document.getElementById("fFrameV");
+        if (v) v.textContent = String(l.previewFrame);
+        this.render();
+      });
+    }
 
     if (hasColor) {
       $<HTMLInputElement>("fColor").addEventListener("input", (e) => {

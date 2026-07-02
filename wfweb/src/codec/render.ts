@@ -239,7 +239,9 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
     }
     let img: RgbaImage;
     if (layer.frames && layer.frames > 1) {
-      const idx = sheetFrameIdx(layer.mock, layer.frames, hh, mm, ss);
+      const idx = layer.previewFrame !== undefined
+        ? layer.previewFrame
+        : sheetFrameIdx(layer.mock, layer.frames, hh, mm, ss);
       if (idx === null) continue;
       const frames = atlasGlyphs(dial, layer.assetOff, layer.frames);
       img = frames[Math.min(idx, frames.length - 1)] ?? decodeLayer(dial, layer, jpeg);

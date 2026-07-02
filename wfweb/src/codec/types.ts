@@ -71,6 +71,8 @@ export interface Layer {
   arcMax?: number;
   /** Largura da linha do arco vetorial compacto (0x5b+12); undefined = anel cheio/texturizado. */
   arcWidth?: number;
+  /** Override de frame p/ preview (scrubber do editor); undefined = frame vem do valor mock. */
+  previewFrame?: number;
 }
 
 /** Dial estruturado parseado + editável. */

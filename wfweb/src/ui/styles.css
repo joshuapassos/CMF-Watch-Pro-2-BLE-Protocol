@@ -134,6 +134,12 @@ h2 {
   max-width: 640px;
   justify-content: center;
 }
+.simpanel { width: 100%; max-width: 466px; margin-top: 8px; }
+.simpanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 4px; }
+.simrow { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.simrow label { width: 120px; color: var(--muted); font-size: 12px; }
+.simrow input[type="range"] { flex: 1; }
+.simrow .simval { width: 72px; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); font-size: 12px; }
 .assetbar .asset {
   width: 48px; height: 48px;
   border: 1px solid var(--line);

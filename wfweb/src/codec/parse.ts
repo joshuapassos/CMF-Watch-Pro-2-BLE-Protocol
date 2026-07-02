@@ -133,7 +133,7 @@ export interface SceneDrawable {
   w?: number;
   h?: number;
   /** Anel de progresso (0x81): setor = valor/max. `color`=arco vetorial compacto; senão disco texturizado. */
-  arc?: { max: number; color?: [number, number, number]; width?: number };
+  arc?: { max: number; color?: [number, number, number]; width?: number; colorOff?: number };
 }
 
 const SCENE_DRAWABLE_TAGS = new Set([0x30, 0x38, 0x70]);
@@ -210,7 +210,8 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
           if (!(compact && width !== undefined && width > 24)) {
             out.push({
               tag, x: ax, y: ay, xOff: c, yOff: c + 2, w: aw, h: ah,
-              assetOff: ftbl ? ftbl.base : 0, frameCount: 1, arc: { max, color, width },
+              assetOff: ftbl ? ftbl.base : 0, frameCount: 1,
+              arc: { max, color, width, colorOff: compact ? c + 8 : undefined },
             });
           }
         }
@@ -418,7 +419,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
           cf: at ? at[0] : 5, w: d.w ?? (at ? at[1] : 0), h: d.h ?? (at ? at[2] : 0),
           assetOff: d.assetOff, assetLen: at ? at[3] : 0,
           x: d.x, y: d.y, mock: "percent", arcMax: d.arc.max,
-          color: d.arc.color, arcWidth: d.arc.width,
+          color: d.arc.color, arcWidth: d.arc.width, colorOff: d.arc.colorOff,
         }));
         idx += 1;
         continue;
@@ -609,9 +610,12 @@ export function parseStructured(bin: Uint8Array): StructDial {
         // do scan em 10 bytes. Tinge a máscara A8 cf=13 (colorida em runtime). Validado nas cores
         // conhecidas de 284/288/298/303 (branco p/ dials de dígito branco).
         let color: [number, number, number] | undefined;
+        let colorOff: number | undefined;
+        let srcOff: number | undefined;
         if (kind === "text" && cf === 13 && i >= 10 && bin[i - 7] === 0x01 && bin[i - 6] === 0xff) {
           const rgb: [number, number, number] = [bin[i - 10], bin[i - 9], bin[i - 8]];
-          if (rgb[0] + rgb[1] + rgb[2] > 0) color = rgb;
+          if (rgb[0] + rgb[1] + rgb[2] > 0) { color = rgb; colorOff = i - 10; }
+          if (sourceId !== undefined) srcOff = i - 5;
         }
 
         // Em sceneMode, imagens/ponteiros vêm da cena TLV — o scan plano só contribui TEXTO.
@@ -635,7 +639,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
           : `Camada ${idx} (não-posicionada)`;
         layers.push(mkLayer({
           kind, name: kname, cf, w, h, assetOff: ptr, assetLen: alen,
-          x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId, color,
+          x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId, color, colorOff, srcOff,
         }));
         idx += 1;
       }

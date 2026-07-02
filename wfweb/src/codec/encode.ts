@@ -16,6 +16,13 @@ export function encodeInPlace(dial: StructDial): Uint8Array {
     if (layer.yOff !== undefined) writeU16le(out, layer.yOff, layer.y);
     if (layer.pivxOff !== undefined) writeU16le(out, layer.pivxOff, layer.pivotX);
     if (layer.pivyOff !== undefined) writeU16le(out, layer.pivyOff, layer.pivotY);
+    // Cor (RGB, 3 bytes) e fonte de dado (1 byte) editadas no inspector — same-footprint.
+    if (layer.colorOff !== undefined && layer.color) {
+      out[layer.colorOff] = layer.color[0];
+      out[layer.colorOff + 1] = layer.color[1];
+      out[layer.colorOff + 2] = layer.color[2];
+    }
+    if (layer.srcOff !== undefined && layer.sourceId !== undefined) out[layer.srcOff] = layer.sourceId;
     if (layer.newPayload) {
       const payload = layer.newPayload;
       if (payload.length > layer.assetLen) {

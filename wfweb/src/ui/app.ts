@@ -4,7 +4,8 @@ import { parseStructured, setAod } from "../codec/parse.js";
 import { renderAt, decodeLayer, type JpegCache } from "../codec/render.js";
 import { encodeInPlace, setLayerImageRaster, isPhotoDial, buildPhotoDial, FULL_DIM, THUMB_DIM } from "../codec/encode.js";
 import { buildNotation, applyNotation } from "../codec/notation.js";
-import { MOCK_ALL, mockLabel } from "../codec/mock.js";
+import { MOCK_ALL, mockLabel, DATA_SOURCES, mockFromSourceId } from "../codec/mock.js";
+import { simEnv } from "../codec/mock.js";
 import type { Layer, MockKind, Notation, StructDial } from "../codec/types.js";
 import { drawToCanvas, pointerToCanvas } from "./canvas.js";
 import { readFileBytes, downloadBytes, outName } from "./fileio.js";
@@ -157,14 +158,23 @@ export class App {
     this.inspBody.className = "";
     const movable = l.xOff !== undefined && l.yOff !== undefined;
     const pivotable = l.pivxOff !== undefined && l.pivyOff !== undefined;
+    const hasColor = l.kind === "arc" || (l.kind === "text" && l.cf === 13) || l.colorOff !== undefined;
+    const isArc = l.kind === "arc";
+    const isDataBound = l.kind === "text" || l.kind === "pointer" || l.kind === "arc";
+    const hex = l.color ? "#" + l.color.map((c) => c.toString(16).padStart(2, "0")).join("") : "#ffffff";
+    const persistNote = l.srcOff !== undefined || l.colorOff !== undefined ? "" : " (só preview)";
+
     const frag = document.createElement("div");
     frag.innerHTML = `
-      <div class="field"><label>Tipo</label><span>${iconFor(l.kind)} ${l.kind} · cf${l.cf} · ${l.w}×${l.h}</span></div>
+      <div class="field"><label>Tipo</label><span>${iconFor(l.kind)} ${l.kind} · cf${l.cf} · ${l.w}×${l.h}${l.frames ? ` · ${l.frames} frames` : ""}</span></div>
       <div class="field"><label>X</label><input type="number" id="fX" value="${l.x}" ${movable ? "" : "disabled"}></div>
       <div class="field"><label>Y</label><input type="number" id="fY" value="${l.y}" ${movable ? "" : "disabled"}></div>
       <div class="field"><label>Pivot X</label><input type="number" id="fPX" value="${l.pivotX}" ${pivotable ? "" : "disabled"}></div>
       <div class="field"><label>Pivot Y</label><input type="number" id="fPY" value="${l.pivotY}" ${pivotable ? "" : "disabled"}></div>
-      <div class="field"><label>Dado</label><select id="fMock"></select></div>
+      ${isDataBound ? `<div class="field"><label>Fonte${persistNote}</label><select id="fSrc"></select></div>` : ""}
+      ${hasColor ? `<div class="field"><label>Cor${l.colorOff === undefined ? " (só preview)" : ""}</label><input type="color" id="fColor" value="${hex}"></div>` : ""}
+      ${isArc ? `<div class="field"><label>Máx (anel)</label><input type="number" id="fMax" value="${l.arcMax ?? 100}"></div>` : ""}
+      <div class="field"><label>Dado (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visível</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
       <div class="field full"><button class="btn wide" id="fReplace">🖼 Trocar imagem…</button></div>
     `;
@@ -180,6 +190,26 @@ export class App {
       mockSel.appendChild(opt);
     }
 
+    // Fonte de dado real (enum do firmware) — escreve sourceId (persistido no export via srcOff).
+    if (isDataBound) {
+      const srcSel = $<HTMLSelectElement>("fSrc");
+      for (const s of DATA_SOURCES) {
+        const opt = document.createElement("option");
+        opt.value = String(s.id);
+        opt.textContent = `${s.label} (0x${s.id.toString(16)})`;
+        if (s.id === l.sourceId) opt.selected = true;
+        srcSel.appendChild(opt);
+      }
+      srcSel.addEventListener("change", () => {
+        const id = parseInt(srcSel.value, 10);
+        l.sourceId = id;
+        l.mock = mockFromSourceId(id);
+        mockSel.value = l.mock;
+        this.render();
+        this.refreshJson();
+      });
+    }
+
     const bindNum = (id: string, set: (v: number) => void) => {
       $<HTMLInputElement>(id).addEventListener("input", (e) => {
         set(parseInt((e.target as HTMLInputElement).value || "0", 10) | 0);
@@ -191,6 +221,17 @@ export class App {
     bindNum("fY", (v) => (l.y = v));
     bindNum("fPX", (v) => (l.pivotX = v));
     bindNum("fPY", (v) => (l.pivotY = v));
+    if (isArc) bindNum("fMax", (v) => (l.arcMax = v || 100));
+
+    if (hasColor) {
+      $<HTMLInputElement>("fColor").addEventListener("input", (e) => {
+        const v = (e.target as HTMLInputElement).value; // #rrggbb
+        l.color = [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16)];
+        this.render();
+        this.refreshJson();
+      });
+    }
+
     mockSel.addEventListener("change", () => {
       l.mock = mockSel.value as MockKind;
       this.render();
@@ -353,8 +394,23 @@ export class App {
     const dt = (now - this.lastT) / 1000;
     this.lastT = now;
     this.simSeconds = (this.simSeconds + dt * 60) % (12 * 3600);
+    this.driveData(this.simSeconds); // simulação: varia passos/FC/%meta p/ ver anéis/complicações
     this.render();
     requestAnimationFrame(this.tick);
+  }
+
+  /** Varia os dados mock num ciclo de ~30s (espelha sim.ts) — anéis varrem, complicações trocam. */
+  private driveData(t: number): void {
+    const cyc = (t % 30) / 30;
+    simEnv.percent = Math.round(cyc * 100);
+    simEnv.battery = Math.round(100 - cyc * 100);
+    simEnv.steps = Math.round(cyc * 12000);
+    simEnv.kcal = Math.round(cyc * 300);
+    simEnv.distance = +(cyc * 8).toFixed(1);
+    simEnv.bpm = Math.round(70 + 40 * Math.sin(t / 3));
+    simEnv.temp = Math.round(15 + cyc * 25);
+    simEnv.weekday = Math.floor(t / 4) % 7;
+    simEnv.month = Math.floor(t / 6) % 12;
   }
 
   // ---- Export .bin ----
@@ -395,6 +451,7 @@ function iconFor(kind: Layer["kind"]): string {
     case "image": return "🖼";
     case "pointer": return "🕳";
     case "text": return "🔢";
+    case "arc": return "◠";
     default: return "▫";
   }
 }

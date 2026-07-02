@@ -39,6 +39,7 @@ export function buildNotation(dial: StructDial, toDataUrl?: RgbaToDataUrl): Nota
       }
       assets[assetKey] = { cf: l.cf, w: l.w, h: l.h, src, ...(atlas ? { atlas } : {}) };
     }
+    const hex = l.color ? "#" + l.color.map((c) => c.toString(16).padStart(2, "0")).join("") : undefined;
     layers.push({
       type: l.kind,
       asset: assetKey,
@@ -46,6 +47,9 @@ export function buildNotation(dial: StructDial, toDataUrl?: RgbaToDataUrl): Nota
       y: l.y,
       ...(l.pivotX || l.pivotY ? { pivotX: l.pivotX, pivotY: l.pivotY } : {}),
       ...(mockToSource(l.mock) ? { source: mockToSource(l.mock) } : {}),
+      ...(hex ? { color: hex } : {}),
+      ...(l.kind === "arc" ? { arcMax: l.arcMax ?? 100 } : {}),
+      ...(l.frames && l.frames > 1 ? { frames: l.frames } : {}),
       ...(l.visible ? {} : { visible: false }),
     });
   });
@@ -85,6 +89,10 @@ export function applyNotation(dial: StructDial, notation: Notation): string[] {
     if (typeof nl.pivotY === "number") l.pivotY = nl.pivotY | 0;
     if (nl.source !== undefined) l.mock = sourceToMock(nl.source);
     if (typeof nl.visible === "boolean") l.visible = nl.visible;
+    if (typeof nl.color === "string" && /^#[0-9a-fA-F]{6}$/.test(nl.color)) {
+      l.color = [parseInt(nl.color.slice(1, 3), 16), parseInt(nl.color.slice(3, 5), 16), parseInt(nl.color.slice(5, 7), 16)];
+    }
+    if (typeof nl.arcMax === "number") l.arcMax = nl.arcMax;
   }
   return warnings;
 }

@@ -101,6 +101,31 @@ export function digitForSource(id: number, hh: number, mm: number, ss: number): 
   }
 }
 
+/**
+ * Fontes de dado editáveis (id do firmware 0x00–0x8d → rótulo + mock), spec 25 §1.1. Curado p/ o
+ * dropdown do inspector: escrever o `id` no record rebinda a complicação/texto no relógio.
+ */
+export const DATA_SOURCES: Array<{ id: number; label: string; mock: MockKind }> = [
+  { id: 0x07, label: "Hora (12h)", mock: "hour" },
+  { id: 0x04, label: "Hora (24h)", mock: "hour" },
+  { id: 0x0b, label: "Minuto", mock: "minute" },
+  { id: 0x0f, label: "Segundo", mock: "seconds" },
+  { id: 0x13, label: "AM/PM", mock: "ampm" },
+  { id: 0x17, label: "Dia do mês", mock: "date" },
+  { id: 0x16, label: "Mês", mock: "date" },
+  { id: 0x18, label: "Dia da semana", mock: "weekday" },
+  { id: 0x36, label: "Passos", mock: "steps" },
+  { id: 0x60, label: "Calorias", mock: "kcal" },
+  { id: 0x61, label: "Distância", mock: "distance" },
+  { id: 0x48, label: "Freq. cardíaca", mock: "bpm" },
+  { id: 0x1b, label: "Bateria %", mock: "battery" },
+  { id: 0x24, label: "Temperatura", mock: "temp" },
+  { id: 0x25, label: "% de meta", mock: "percent" },
+  { id: 0x70, label: "Ponteiro hora", mock: "hour" },
+  { id: 0x71, label: "Ponteiro minuto", mock: "minute" },
+  { id: 0x72, label: "Ponteiro segundo", mock: "seconds" },
+];
+
 /** Papel de um PONTEIRO pela fonte em @36. 0x0a/0x70→hora, 0x0e/0x71→min, 0x12/0x72→seg. */
 export function pointerRole(src: number): MockKind {
   if (src === 0x0a || src === 0x70) return "hour";

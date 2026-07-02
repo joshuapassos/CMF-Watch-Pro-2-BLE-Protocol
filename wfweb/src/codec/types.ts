@@ -59,6 +59,10 @@ export interface Layer {
   mock: MockKind;
   /** Id da fonte de dado do firmware (0x00–0x8d), se for texto/complicação/ponteiro. */
   sourceId?: number;
+  /** Offset no `raw` do byte da fonte (p/ reescrever no export). */
+  srcOff?: number;
+  /** Offset no `raw` dos 3 bytes RGB da cor (p/ reescrever no export). */
+  colorOff?: number;
   /** Nº de frames do frame-sheet (complicação fill por frame-index); 1/undefined = imagem única. */
   frames?: number;
   /** Cor RGB do elemento (tinge máscara A8 cf=13, colorida em runtime). undefined = branco. */
@@ -109,6 +113,12 @@ export interface NotationLayer {
   /** nome legível da fonte de dado (hour/minute/second/steps/...). */
   source?: string;
   visible?: boolean;
+  /** cor `#rrggbb` (anel de progresso / tint de dígito cf=13). */
+  color?: string;
+  /** denominador do anel de progresso (setor = valor/max). */
+  arcMax?: number;
+  /** nº de frames do frame-sheet (informativo). */
+  frames?: number;
 }
 
 export interface Notation {

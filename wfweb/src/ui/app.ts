@@ -22,8 +22,8 @@ export class App {
   jpegCache: JpegCache = new Map();
   private lastT = 0;
   private drag?: { startX: number; startY: number; layerX: number; layerY: number };
-  private undoStack: string[] = [];
-  private redoStack: string[] = [];
+  private undoStack: Layer[][] = [];
+  private redoStack: Layer[][] = [];
   private zoom = 1;
   private guides: Array<{ x?: number; y?: number }> = [];
 
@@ -152,32 +152,15 @@ export class App {
     this.clock.textContent = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
   }
 
-  // ---- Undo/redo (projeção dos campos editáveis + ordem das camadas) ----
-  private snapshot(): string {
-    if (!this.dial) return "[]";
-    return JSON.stringify(this.dial.layers.map((l) => [
-      l.assetOff, l.x, l.y, l.pivotX, l.pivotY, l.mock, l.sourceId ?? null,
-      l.color ?? null, l.arcMax ?? null, l.previewFrame ?? null, l.visible ? 1 : 0, l.deleted ? 1 : 0,
-    ]));
+  // ---- Undo/redo: snapshot = clone raso do array de camadas (cobre add/delete/reorder/campos) ----
+  private snapshot(): Layer[] {
+    return this.dial ? this.dial.layers.map((l) => ({ ...l })) : [];
   }
 
-  private restore(snap: string): void {
+  private restore(snap: Layer[]): void {
     if (!this.dial) return;
-    const arr = JSON.parse(snap) as unknown[][];
-    const pool = [...this.dial.layers];
-    const out: typeof this.dial.layers = [];
-    for (const r of arr) {
-      const idx = pool.findIndex((l) => l.assetOff === r[0]); // casa por asset (restaura ordem)
-      if (idx < 0) continue;
-      const l = pool.splice(idx, 1)[0];
-      l.x = r[1] as number; l.y = r[2] as number; l.pivotX = r[3] as number; l.pivotY = r[4] as number;
-      l.mock = r[5] as Layer["mock"]; l.sourceId = (r[6] as number) ?? undefined;
-      l.color = (r[7] as [number, number, number]) ?? undefined; l.arcMax = (r[8] as number) ?? undefined;
-      l.previewFrame = (r[9] as number) ?? undefined; l.visible = r[10] === 1; l.deleted = r[11] === 1;
-      out.push(l);
-    }
-    out.push(...pool);
-    this.dial.layers = out;
+    this.dial.layers = snap.map((l) => ({ ...l }));
+    this.selected = -1;
     this.refreshAll();
   }
 
@@ -299,7 +282,7 @@ export class App {
       return;
     }
     this.inspBody.className = "";
-    const movable = l.xOff !== undefined && l.yOff !== undefined;
+    const movable = (l.xOff !== undefined && l.yOff !== undefined) || !!l.isClone;
     const pivotable = l.pivxOff !== undefined && l.pivyOff !== undefined;
     const hasColor = l.kind === "arc" || (l.kind === "text" && l.cf === 13) || l.colorOff !== undefined;
     const isArc = l.kind === "arc";
@@ -321,6 +304,7 @@ export class App {
       <div class="field"><label>Dado (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visível</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
       <div class="field full"><button class="btn wide" id="fReplace">🖼 Trocar imagem…</button></div>
+      <div class="field full"><button class="btn wide" id="fDup">⧉ Duplicar camada</button></div>
       <div class="field full"><button class="btn wide danger" id="fDelete">🗑 Deletar camada</button></div>
     `;
     this.inspBody.innerHTML = "";
@@ -405,6 +389,22 @@ export class App {
       this.refreshJson();
     });
     $("fReplace").addEventListener("click", () => this.replaceLayerImage(this.selected));
+    $("fDup").addEventListener("click", () => {
+      if (!this.dial) return;
+      this.pushUndo();
+      // clona o nó comprovado (mesmo asset), desloca +12,+12; export insere via rebuild.
+      // Zera os *Off (apontam pros bytes da FONTE) — o rebuild posiciona o clone via bytes do nó,
+      // e o encodeInPlace não deve reescrever nada da fonte com dados do clone.
+      const clone: Layer = {
+        ...l, x: Math.min(465, l.x + 12), y: Math.min(465, l.y + 12), isClone: true,
+        sourceKey: `${l.assetOff},${l.x},${l.y}`,
+        xOff: undefined, yOff: undefined, pivxOff: undefined, pivyOff: undefined, colorOff: undefined, srcOff: undefined,
+      };
+      this.dial.layers.splice(this.selected + 1, 0, clone);
+      this.selected += 1;
+      this.refreshAll();
+      this.status(`Camada duplicada. Export insere o novo nó (rebuild). Troque a imagem se quiser.`, "ok");
+    });
     $("fDelete").addEventListener("click", () => {
       this.pushUndo();
       l.deleted = true;
@@ -517,7 +517,8 @@ export class App {
   // ---- Drag ----
   private onPointerDown(e: PointerEvent): void {
     const l = this.dial?.layers[this.selected];
-    if (!l || l.xOff === undefined || l.yOff === undefined) return;
+    // arrastável se tem offsets de geometria (persistidos in-place) OU é um clone (posição via rebuild).
+    if (!l || (!l.isClone && (l.xOff === undefined || l.yOff === undefined))) return;
     this.pushUndo();
     const [x, y] = pointerToCanvas(this.canvas, e);
     this.drag = { startX: x, startY: y, layerX: l.x, layerY: l.y };
@@ -598,9 +599,9 @@ export class App {
   private onExport(): void {
     if (!this.dial) return;
     try {
-      const hasDeleted = this.dial.layers.some((l) => l.deleted);
+      const structural = this.dial.layers.some((l) => l.deleted || l.isClone);
       let bytes: Uint8Array;
-      if (hasDeleted) {
+      if (structural) {
         // REBUILD: camadas removidas mudam o footprint → reconstrói cena+pool e reajusta ponteiros.
         const inPlace = encodeInPlace(this.dial); // aplica geometria/cor/fonte primeiro
         bytes = rebuildContainer({ ...this.dial, raw: inPlace });
@@ -610,7 +611,7 @@ export class App {
       }
       downloadBytes(bytes, outName(this.dial.perDialId, this.dial.name));
       this.status(
-        `Exportado (${bytes.length}B${hasDeleted ? ", rebuild ✓ validado" : ""}). Instale via pipeline 0x9075.`,
+        `Exportado (${bytes.length}B${structural ? ", rebuild ✓ validado" : ""}). Instale via pipeline 0x9075.`,
         "ok",
       );
     } catch (err) {

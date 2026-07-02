@@ -75,6 +75,10 @@ export interface Layer {
   previewFrame?: number;
   /** Marcada p/ remoção — some do preview e é omitida no export (rebuild do container). */
   deleted?: boolean;
+  /** Camada NOVA (clone de um nó existente) — inserida no export via rebuild. */
+  isClone?: boolean;
+  /** Chave `assetOff,x,y` do nó-fonte a clonar (bytes comprovados) no rebuild. */
+  sourceKey?: string;
 }
 
 /** Dial estruturado parseado + editável. */

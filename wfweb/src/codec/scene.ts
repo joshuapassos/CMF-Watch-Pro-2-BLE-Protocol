@@ -181,8 +181,9 @@ export function rebuildContainer(dial: StructDial): Uint8Array {
   const oldOffs = new Set<number>(assets.map((a) => a[0]));
 
   // chave (assetOff,x,y) das camadas marcadas p/ deletar.
-  const del = new Set(dial.layers.filter((l) => l.deleted).map((l) => `${l.assetOff},${l.x},${l.y}`));
-  if (del.size === 0) return raw.slice();
+  const del = new Set(dial.layers.filter((l) => l.deleted && !l.isClone).map((l) => `${l.assetOff},${l.x},${l.y}`));
+  const clones = dial.layers.filter((l) => l.isClone && !l.deleted);
+  if (del.size === 0 && clones.length === 0) return raw.slice();
 
   // chave de um nó-folha drawable: base da frame-table + X/Y do corpo.
   const leafKey = (n: SceneNode): string | null => {
@@ -209,6 +210,29 @@ export function rebuildContainer(dial: StructDial): Uint8Array {
     });
 
   const roots = prune(parseScene(raw, 0x24, firstAsset));
+
+  // INSERE clones: acha o nó-fonte (por sourceKey = assetOff,x,y do original), clona os bytes,
+  // patcha X/Y (corpo+3/+5) p/ a nova posição e insere após a fonte no mesmo pai. O ponteiro do
+  // clone = o mesmo asset da fonte (offset válido) → é reajustado pelo delta como os demais.
+  const insertClone = (nodes: SceneNode[], srcKey: string, nx: number, ny: number): boolean => {
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      if (n.children.length > 0) {
+        if (insertClone(n.children, srcKey, nx, ny)) return true;
+        continue;
+      }
+      if (leafKey(n) === srcKey) {
+        const leaf = n.leaf.slice();
+        writeU16le(leaf, 3, nx);
+        writeU16le(leaf, 5, ny);
+        nodes.splice(i + 1, 0, { tag: n.tag, leaf, children: [] });
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const cl of clones) if (cl.sourceKey) insertClone(roots, cl.sourceKey, cl.x, cl.y);
+
   const parts = roots.map(serializeScene);
   const newScene = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
   { let o = 0; for (const p of parts) { newScene.set(p, o); o += p.length; } }

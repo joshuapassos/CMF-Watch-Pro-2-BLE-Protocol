@@ -32,6 +32,24 @@ export function encodeInPlace(dial: StructDial): Uint8Array {
       const mid = out[layer.digitCountOff] & 0x70;
       out[layer.digitCountOff] = mid | (layer.digitCount & 0x0f) | (layer.digitZeroPad ? 0x80 : 0);
     }
+    // Re-skin de ANIMAÇÃO: grava cada frame novo em seu próprio offset (same-footprint por frame).
+    // A frame-table (strides) NÃO é tocada → offsets/strides seguem válidos, arquivo não cresce.
+    if (layer.newFramePayloads && layer.frameOffsets && layer.frameLens) {
+      for (let f = 0; f < layer.frameOffsets.length; f++) {
+        const fp = layer.newFramePayloads[f];
+        if (!fp) continue; // frame inalterado
+        const cap = layer.frameLens[f];
+        if (fp.length > cap) {
+          throw new Error(
+            `camada '${layer.name}' frame ${f}: novo (${fp.length} B) não cabe no slot (${cap} B) — same-footprint`,
+          );
+        }
+        const foff = layer.frameOffsets[f];
+        writeU32le(out, foff + 4, fp.length);
+        out.set(fp, foff + 8);
+        for (let b = foff + 8 + fp.length; b < foff + 8 + cap; b++) out[b] = 0; // zera cauda do frame antigo
+      }
+    }
     if (layer.newPayload) {
       const payload = layer.newPayload;
       if (payload.length > layer.assetLen) {

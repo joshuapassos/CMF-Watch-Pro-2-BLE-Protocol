@@ -10,7 +10,7 @@ import { simEnv } from "../codec/mock.js";
 import type { Layer, MockKind, Notation, StructDial } from "../codec/types.js";
 import { drawToCanvas, pointerToCanvas } from "./canvas.js";
 import { readFileBytes, downloadBytes, outName } from "./fileio.js";
-import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCoverSquare, jpegPayloadToRgba } from "./imageutil.js";
+import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg } from "./imageutil.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -21,6 +21,7 @@ export class App {
   simSeconds = 10 * 3600 + 8 * 60 + 30;
   jpegCache: JpegCache = new Map();
   private lastT = 0;
+  private animMs = 0;
   private drag?: { startX: number; startY: number; layerX: number; layerY: number };
   private undoStack: Layer[][] = [];
   private redoStack: Layer[][] = [];
@@ -101,6 +102,9 @@ export class App {
       await this.predecodeJpegs();
       this.enableUi(true);
       this.refreshAll();
+      // Auto-play se o dial tem animação autoplay (pra ver os frames ciclando sem apertar ▶).
+      this.animMs = 0;
+      if (this.hasAnimation() && !this.playing) this.togglePlay();
       this.status(
         `Opened <code>${file.name}</code> — id ${dial.perDialId}, \u201c${dial.name}\u201d, ${dial.layers.length} layers.`,
         "ok",
@@ -114,6 +118,20 @@ export class App {
     this.jpegCache.clear();
     if (!this.dial) return;
     for (const l of this.dial.layers) {
+      // Animação (picregion cf=1): decodifica TODOS os frames, cacheando cada um por seu offset.
+      if (l.animation && l.frameOffsets && l.frameLens) {
+        for (let f = 0; f < l.frameOffsets.length; f++) {
+          try {
+            const off = l.frameOffsets[f];
+            const payload = this.dial.raw.subarray(off + 8, off + 8 + l.frameLens[f]);
+            const data = await jpegPayloadToRgba(payload, l.w, l.h);
+            this.jpegCache.set(off, { w: l.w, h: l.h, data });
+          } catch {
+            /* frame JPEG inválido — ignora */
+          }
+        }
+        continue;
+      }
       if (l.cf === 1) {
         try {
           const payload = this.dial.raw.subarray(l.assetOff + 8, l.assetOff + 8 + l.assetLen);
@@ -362,7 +380,9 @@ export class App {
       ${l.frames && l.frames > 1 && !isArc ? `<div class="field"><label>Frame</label><input type="range" id="fFrame" min="0" max="${l.frames - 1}" value="${l.previewFrame ?? 0}"><span id="fFrameV">${l.previewFrame ?? "auto"}</span></div>` : ""}
       <div class="field"><label>Data (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visible</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
-      <div class="field full"><button class="btn wide" id="fReplace">🖼 Replace image…</button></div>
+      ${l.animation ? `<div class="field full"><button class="btn wide" id="fAnimFiles" title="Sobe ${l.frames} imagens (1 por frame, em ordem alfabética do nome). Cada uma vira um frame da animação.">🎞 Replace frames (${l.frames} files)…</button></div>` : ""}
+      ${l.animation ? `<div class="field full"><button class="btn wide" id="fAnimDrift" title="Sobe 1 imagem e o editor gera os ${l.frames} frames deslocando-a (pan horizontal com wrap = loop perfeito).">🖼 From 1 image → drift…</button></div>` : ""}
+      ${l.animation ? "" : `<div class="field full"><button class="btn wide" id="fReplace">🖼 Replace image…</button></div>`}
       <div class="field full"><button class="btn wide" id="fErase">🧽 Erase (keep size)</button></div>
       <div class="field full"><button class="btn wide" id="fDup">⧉ Duplicate layer</button></div>
       <div class="field full"><button class="btn wide danger" id="fDelete">🗑 Delete layer</button></div>
@@ -484,7 +504,9 @@ export class App {
       this.render();
       this.refreshJson();
     });
-    $("fReplace").addEventListener("click", () => this.replaceLayerImage(this.selected));
+    document.getElementById("fReplace")?.addEventListener("click", () => this.replaceLayerImage(this.selected));
+    document.getElementById("fAnimFiles")?.addEventListener("click", () => this.replaceAnimFrames(this.selected));
+    document.getElementById("fAnimDrift")?.addEventListener("click", () => this.driftAnimFromImage(this.selected));
     // Apaga a camada trocando seu asset por um raster TRANSPARENTE do mesmo w×h. Comprime pequeno
     // (≤ len original) → SAME-FOOTPRINT: o export fica com o tamanho idêntico e instala pelo re-skin
     // (delete muda o tamanho → a065=0x0a no relógio). Ideal p/ "sumir" com um elemento (ex.: colon).
@@ -619,6 +641,98 @@ export class App {
     input.click();
   }
 
+  // ---- Animação: re-skin dos frames (same-footprint por frame) ----
+  /** Codifica um frame novo (RGBA) em JPEG cabendo no slot, guarda em newFramePayloads e atualiza o
+   *  cache de preview. Lança se não couber. */
+  private async setAnimFrame(l: Layer, i: number, rgba: Uint8ClampedArray): Promise<number> {
+    const cap = l.frameLens![i];
+    const jpeg = await rgbaToJpeg(rgba, l.w, l.h, cap); // lança se não couber nem no q mínimo
+    if (!l.newFramePayloads) l.newFramePayloads = new Array(l.frameOffsets!.length).fill(null);
+    l.newFramePayloads[i] = jpeg;
+    this.jpegCache.set(l.frameOffsets![i], { w: l.w, h: l.h, data: rgba });
+    return jpeg.length;
+  }
+
+  /** Pan horizontal com WRAP (loop perfeito) de um bitmap redimensionado p/ w×h; devolve RGBA. */
+  private panWrapRgba(bmp: ImageBitmap, w: number, h: number, shift: number): Uint8ClampedArray {
+    const cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    const s = ((shift % w) + w) % w;
+    ctx.drawImage(bmp, -s, 0, w, h);
+    ctx.drawImage(bmp, w - s, 0, w, h); // parte que "saiu" reentra pela esquerda
+    return ctx.getImageData(0, 0, w, h).data;
+  }
+
+  /** Modo A: sobe N imagens (1 por frame, ordem alfabética/numérica). */
+  private replaceAnimFrames(index: number): void {
+    const d = this.dial;
+    const l = d?.layers[index];
+    if (!d || !l || !l.animation || !l.frameOffsets) return;
+    const n = l.frameOffsets.length;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.multiple = true;
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files ?? []).sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true }));
+      if (!files.length) return;
+      this.pushUndo();
+      try {
+        let maxSize = 0;
+        for (let i = 0; i < n; i++) {
+          const file = files[Math.min(i, files.length - 1)]; // menos arquivos → repete o último
+          const bmp = await fileToBitmap(file);
+          const rgba = bitmapToRgbaExact(bmp, l.w, l.h);
+          maxSize = Math.max(maxSize, await this.setAnimFrame(l, i, rgba));
+        }
+        this.render();
+        this.refreshJson();
+        const note = files.length !== n ? ` (${files.length} arquivos → ${n} frames; ajustado)` : "";
+        this.status(`Animation: ${n} frames trocados${note}. Maior ${maxSize}B. ✓`, "ok");
+      } catch (err) {
+        l.newFramePayloads = undefined;
+        this.status("Troca de frames falhou: " + (err as Error).message, "err");
+      }
+    });
+    input.click();
+  }
+
+  /** Modo B: sobe 1 imagem e gera N frames por drift (pan horizontal com wrap = loop perfeito). */
+  private driftAnimFromImage(index: number): void {
+    const d = this.dial;
+    const l = d?.layers[index];
+    if (!d || !l || !l.animation || !l.frameOffsets) return;
+    const n = l.frameOffsets.length;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      this.pushUndo();
+      try {
+        const bmp = await fileToBitmap(file);
+        let maxSize = 0;
+        for (let i = 0; i < n; i++) {
+          const shift = Math.round((i / n) * l.w); // 0..w ao longo dos N frames; wrap fecha o loop
+          const rgba = this.panWrapRgba(bmp, l.w, l.h, shift);
+          maxSize = Math.max(maxSize, await this.setAnimFrame(l, i, rgba));
+        }
+        this.render();
+        this.refreshJson();
+        this.status(`Animation: ${n} frames gerados por drift (pan wrap). Maior ${maxSize}B. ✓`, "ok");
+      } catch (err) {
+        l.newFramePayloads = undefined;
+        this.status("Drift falhou: " + (err as Error).message, "err");
+      }
+    });
+    input.click();
+  }
+
   // ---- AOD ----
   private aodMode = false;
   private onAod(on: boolean): void {
@@ -703,12 +817,32 @@ export class App {
 
   private tick(now: number): void {
     if (!this.playing) return;
-    const dt = (now - this.lastT) / 1000;
+    const dtMs = now - this.lastT;
+    const dt = dtMs / 1000;
     this.lastT = now;
     this.simSeconds = (this.simSeconds + dt * 60) % (12 * 3600);
+    // Fase de animação em TEMPO REAL (~64 ms/frame, como o firmware) — independente do relógio 60×.
+    this.animMs += dtMs;
+    this.advanceAnimFrames();
     this.driveData(this.simSeconds); // simulação: varia passos/FC/%meta p/ ver anéis/complicações
     this.render();
     requestAnimationFrame(this.tick);
+  }
+
+  /** Loop infinito ~64 ms/frame: seta `previewFrame` de cada layer de animação a partir de `animMs`. */
+  private advanceAnimFrames(): void {
+    if (!this.dial) return;
+    const FRAME_MS = 64;
+    for (const l of this.dial.layers) {
+      if (l.animation && l.frames && l.frames > 1) {
+        l.previewFrame = Math.floor(this.animMs / FRAME_MS) % l.frames;
+      }
+    }
+  }
+
+  /** true se o dial tem alguma camada de animação autoplay. */
+  private hasAnimation(): boolean {
+    return !!this.dial?.layers.some((l) => l.animation && (l.frames ?? 0) > 1);
   }
 
   /** Varia os dados mock num ciclo de ~30s (espelha sim.ts) — anéis varrem, complicações trocam. */
@@ -726,19 +860,24 @@ export class App {
   }
 
   // ---- Export .bin ----
+  /** Serializa o dial editado em bytes (mesmo caminho do export; exposto p/ automação/testes). */
+  encodeBytes(): Uint8Array {
+    if (!this.dial) throw new Error("nenhum dial aberto");
+    const structural = this.dial.layers.some((l) => l.deleted || l.isClone);
+    if (structural) {
+      // REBUILD: camadas removidas mudam o footprint → reconstrói cena+pool e reajusta ponteiros.
+      const inPlace = encodeInPlace(this.dial); // aplica geometria/cor/fonte primeiro
+      const bytes = rebuildContainer({ ...this.dial, raw: inPlace });
+      validateContainer(bytes); // invariante do firmware (1º byte 0x20, lengths fecham)
+      return bytes;
+    }
+    return encodeInPlace(this.dial);
+  }
+
   private onExport(): void {
     if (!this.dial) return;
     try {
-      const structural = this.dial.layers.some((l) => l.deleted || l.isClone);
-      let bytes: Uint8Array;
-      if (structural) {
-        // REBUILD: camadas removidas mudam o footprint → reconstrói cena+pool e reajusta ponteiros.
-        const inPlace = encodeInPlace(this.dial); // aplica geometria/cor/fonte primeiro
-        bytes = rebuildContainer({ ...this.dial, raw: inPlace });
-        validateContainer(bytes); // invariante do firmware (1º byte 0x20, lengths fecham)
-      } else {
-        bytes = encodeInPlace(this.dial);
-      }
+      const bytes = this.encodeBytes();
       downloadBytes(bytes, outName(this.dial.perDialId, this.dial.name));
       // same-footprint (tamanho idêntico ao original) é o único caminho de re-skin PROVADO no relógio;
       // tamanho diferente (delete/add) tende a a065=0x0a (armazena, não ativa).

@@ -49,3 +49,22 @@ export async function jpegPayloadToRgba(payload: Uint8Array, w: number, h: numbe
   const bmp = await createImageBitmap(blob);
   return bitmapToRgbaExact(bmp, w, h);
 }
+
+/**
+ * RGBA (w*h*4) → bytes JPEG, baixando a qualidade até caber em `maxBytes` (same-footprint por frame
+ * de animação). Lança se não couber nem na qualidade mínima. cf=1 = JPEG cru (começa `ff d8`).
+ */
+export async function rgbaToJpeg(data: Uint8ClampedArray, w: number, h: number, maxBytes: number): Promise<Uint8Array> {
+  const { cv, ctx } = scratch(w, h);
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(data), w, h), 0, 0);
+  const qualities = [0.92, 0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25, 0.15];
+  let last = 0;
+  for (const q of qualities) {
+    const blob = await new Promise<Blob | null>((res) => cv.toBlob(res, "image/jpeg", q));
+    if (!blob) continue;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    last = bytes.length;
+    if (bytes.length <= maxBytes) return bytes;
+  }
+  throw new Error(`frame ${w}×${h} não cabe em ${maxBytes} B nem na qualidade mínima (${last} B)`);
+}

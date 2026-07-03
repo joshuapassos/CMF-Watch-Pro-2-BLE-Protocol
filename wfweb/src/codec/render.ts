@@ -246,7 +246,14 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
       continue;
     }
     let img: RgbaImage;
-    if (layer.frames && layer.frames > 1) {
+    if (layer.animation && layer.frameOffsets && layer.frameOffsets.length) {
+      // Animação autoplay (picregion cf=1): frame vem do cursor de tempo (previewFrame, setado pelo
+      // loop do UI ~64 ms/frame) e é lido do cache JPEG por-frame (assetOff de cada frame).
+      const n = layer.frameOffsets.length;
+      const idx = (((layer.previewFrame ?? 0) % n) + n) % n;
+      const off = layer.frameOffsets[idx];
+      img = jpeg?.get(off) ?? { w: layer.w, h: layer.h, data: new Uint8ClampedArray(layer.w * layer.h * 4) };
+    } else if (layer.frames && layer.frames > 1) {
       const idx = layer.previewFrame !== undefined
         ? layer.previewFrame
         : sheetFrameIdx(layer.mock, layer.frames, hh, mm, ss);

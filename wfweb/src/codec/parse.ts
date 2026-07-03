@@ -136,9 +136,39 @@ export interface SceneDrawable {
   arc?: { max: number; color?: [number, number, number]; width?: number; colorOff?: number };
   /** Drawable do container ALWAYS-ON (0x22): variante AOD, oculta no preview normal. */
   aod?: boolean;
+  /** Animação AUTOPLAY (picregion cf=1/JPEG): frames ciclam em loop no relógio. */
+  animation?: boolean;
+  /** Offsets/lens absolutos de cada frame (walk consecutivo a partir de base). */
+  frameOffsets?: number[];
+  frameLens?: number[];
 }
 
 const SCENE_DRAWABLE_TAGS = new Set([0x30, 0x38, 0x70]);
+
+/**
+ * Anda os `count` frames consecutivos a partir de `base`, lendo o header de cada bloco
+ * (`[dimsWord u32][len u32][payload]`) e avançando `8+len`. Stride-agnóstico (não depende da largura
+ * do campo de stride da frame-table). Retorna offsets/lens e o cf do frame 0. null se malformado.
+ */
+function walkFrames(bin: Uint8Array, base: number, count: number): { offsets: number[]; lens: number[]; cf0: number } | null {
+  const offsets: number[] = [];
+  const lens: number[] = [];
+  let off = base;
+  let cf0 = -1;
+  for (let q = 0; q < count; q++) {
+    if (off + 8 > bin.length) return null;
+    const dw = u32le(bin, off);
+    const cf = dw & 0x1f;
+    const len = u32le(bin, off + 4);
+    if (len < 4 || off + 8 + len > bin.length) return null;
+    if (q === 0) cf0 = cf;
+    else if (cf !== cf0) return null; // frames de uma animação têm o mesmo cf
+    offsets.push(off);
+    lens.push(len);
+    off += 8 + len;
+  }
+  return { offsets, lens, cf0 };
+}
 
 /** Frame-table `61 [count u16][base u32][ids]` dentro do corpo de um drawable; base = asset válido. */
 function findFrameTable(bin: Uint8Array, body: number, ln: number, isAsset: (p: number) => boolean): { at: number; count: number; base: number } | null {
@@ -233,6 +263,16 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
         const base = ftbl ? ftbl.base : 0;
         if (ft >= 0 && x >= -320 && x <= 480 && y >= -320 && y <= 480) {
           const d: SceneDrawable = { tag, x, y, xOff: body + 3, yOff: body + 5, assetOff: base, frameCount: count, aod };
+          // Multi-frame: captura offsets/lens de cada frame (walk consecutivo). cf=1 (JPEG) e
+          // count≥2 num elemento posicionado (não-ponteiro) = animação AUTOPLAY (picregion).
+          if (count > 1 && tag !== 0x70) {
+            const fr = walkFrames(bin, base, count);
+            if (fr) {
+              d.frameOffsets = fr.offsets;
+              d.frameLens = fr.lens;
+              if (fr.cf0 === 1) d.animation = true;
+            }
+          }
           // fonte de dado da COMPLICAÇÃO: attr-block `82` após o último `40 01 00` do corpo,
           // id em `82+0x14` (RE §4/§5 — mesmo layout do widget de texto).
           for (let k = ln - 3; k >= 6; k--) {
@@ -434,9 +474,57 @@ export function parseStructured(bin: Uint8Array): StructDial {
   // Frames do sheet do fundo (variantes normal/AOD/estilo) — não desenhar de novo por cima.
   const bgFrameSet = new Set<number>(bgFrames.map(([o]) => o));
   if (aod) bgFrameSet.add(aod[0]);
+  // PICARRAY (modelo 281): N drawables count=1 na MESMA (x,y), cada um apontando p/ um asset cf=1
+  // (JPEG) distinto = animação AUTOPLAY (SDK anim_img_set_src_picarray). O dedup normal colapsaria
+  // esses irmãos num frame estático; aqui os agrupamos numa ÚNICA camada de animação.
+  const animGroups = new Map<SceneDrawable, { offsets: number[]; lens: number[] }>();
+  const consumed = new Set<SceneDrawable>();
+  for (let gi = 0; gi < sceneDrawables.length; gi++) {
+    const g0 = sceneDrawables[gi];
+    if (consumed.has(g0) || g0.arc || g0.frameCount !== 1 || g0.tag === 0x70) continue;
+    const a0 = assetMap.get(g0.assetOff);
+    if (!a0 || a0[0] !== 1) continue; // só cf=1 (JPEG)
+    const run: SceneDrawable[] = [g0];
+    for (let gj = gi + 1; gj < sceneDrawables.length; gj++) {
+      const gn = sceneDrawables[gj];
+      if (gn.frameCount !== 1 || gn.tag !== g0.tag || gn.x !== g0.x || gn.y !== g0.y || !!gn.aod !== !!g0.aod) break;
+      const an = assetMap.get(gn.assetOff);
+      if (!an || an[0] !== 1) break;
+      run.push(gn);
+    }
+    if (run.length >= 4) {
+      animGroups.set(g0, {
+        offsets: run.map((r) => r.assetOff),
+        lens: run.map((r) => assetMap.get(r.assetOff)![3]),
+      });
+      for (const r of run) consumed.add(r);
+    }
+  }
   let idx = 0;
   if (sceneMode) {
     for (const d of sceneDrawables) {
+      // PICARRAY: frame não-líder de um grupo de animação — já representado pela camada do líder.
+      if (consumed.has(d) && !animGroups.has(d)) continue;
+      const animGrp = animGroups.get(d);
+      if (animGrp) {
+        const a = assetMap.get(d.assetOff);
+        if (a) {
+          const key = `anim,${d.x},${d.y},${d.aod ? "a" : "n"}`;
+          if (!placed.has(key)) {
+            placed.add(key);
+            layers.push(mkLayer({
+              kind: "image", name: `Animation ${idx}`,
+              cf: a[0], w: a[1], h: a[2], assetOff: d.assetOff, assetLen: a[3],
+              x: d.x, y: d.y, xOff: d.xOff, yOff: d.yOff,
+              mock: "none", frames: animGrp.offsets.length, animation: true,
+              frameOffsets: animGrp.offsets, frameLens: animGrp.lens,
+              aod: d.aod || undefined,
+            }));
+            idx += 1;
+          }
+        }
+        continue;
+      }
       // ANEL DE PROGRESSO (0x81): tratado ANTES do guard de asset — o arco vetorial compacto
       // (371/364/366/372) não tem asset (assetOff=0). Disco texturizado (322) usa o asset.
       if (d.arc) {
@@ -480,6 +568,28 @@ export function parseStructured(bin: Uint8Array): StructDial {
           }));
           idx += 1;
         }
+        continue;
+      }
+      // ANIMAÇÃO AUTOPLAY (picregion cf=1): frames JPEG ciclam em loop no relógio, independente de
+      // dado. Emite como imagem animada (NÃO cai na heurística flip-clock/hora abaixo).
+      if (d.animation && d.frameOffsets && d.frameLens) {
+        if (bgFrameSet.has(d.assetOff)) continue;
+        const key = `${d.tag},${d.x},${d.y},${w},${h},${d.aod ? "a" : "n"}`;
+        if (placed.has(key)) continue;
+        placed.add(key);
+        layers.push(mkLayer({
+          kind: "image", name: `Animation ${idx}`,
+          cf, w, h, assetOff: d.assetOff, assetLen: alen,
+          x: d.x, y: d.y,
+          xOff: d.xOff, yOff: d.yOff,
+          mock: "none",
+          frames: d.frameCount,
+          animation: true,
+          frameOffsets: d.frameOffsets,
+          frameLens: d.frameLens,
+          aod: d.aod || undefined,
+        }));
+        idx += 1;
         continue;
       }
       let sheetMock: MockKind = "none";

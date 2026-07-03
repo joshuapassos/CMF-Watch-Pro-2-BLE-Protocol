@@ -286,9 +286,12 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
     const img = decodeLayer(dial, l, jpeg);
     // Centro de rotação = (x+pivotX, y+pivotY) — x,y é o canto sup-esq do sprite (cena TLV).
     // Sem pivô decodificado, cai no centro do canvas (comportamento antigo).
+    // AOD: as mãos always-on giram no CENTRO do canvas (o 0x22 às vezes traz um x/y de mão fora do
+    // centro — ex. Gradient hora @69,209 — que o firmware não usa; no relógio real as mãos AOD saem
+    // do centro). Só afeta o modo AOD.
     const hasPiv = l.pivotX !== 0 || l.pivotY !== 0;
-    const cx = hasPiv ? l.x + l.pivotX : 233;
-    const cy = hasPiv ? l.y + l.pivotY : 233;
+    const cx = l.aod ? 233 : (hasPiv ? l.x + l.pivotX : 233);
+    const cy = l.aod ? 233 : (hasPiv ? l.y + l.pivotY : 233);
     rotateBlend(data, dim, img, l.pivotX, l.pivotY, cx, cy, angle);
   });
 

@@ -747,8 +747,15 @@ all 103 dials **byte-exact** (the X/Y write-offset fix above cleared the last mi
   (normal mode hides `aod` layers; AOD mode hides normal ones; the background is swapped by `setAod`
   and always draws). Net oracle win in normal mode across the corpus (**284: 31%→21%**, +18 others) —
   the AOD variants were overdrawing many dials — and the editor's AOD toggle now shows the real
-  dimmed always-on layout (gray complications) instead of the normal ones. (AOD-specific *hands* in
-  `0x22` still parse as unpositioned `other` in some dials — a known refinement.)
+  always-on layout instead of the normal ones. The real AOD is a **black** screen (no dimmed scene):
+  if the dial has no dedicated AOD background frame (`dial.aod`), the normal scene is hidden in AOD
+  mode so it renders black + the `0x22` elements at their own colour. AOD **hands** parse via the
+  scene walker too (it now recurses the `0x22` container tagging drawables `aod`, instead of leaving
+  them to the flat scan where their pivot didn't match → "unpositioned"); AOD hands rotate at the
+  canvas centre (the `0x22` sometimes carries an off-centre hand x/y the firmware ignores — e.g.
+  Gradient's hour `@69,209`). The editor also exposes this as an **isolated Normal|AOD editing UI**
+  (§UI): each screen shows only its own layers and edits persist independently. Normal-mode render is
+  byte-identical throughout; roundtrip stays byte-exact on all 103 dials.
 - **Standalone `0x60` img_number (cnt=10) — source at `−5`, off-by-one forward.** ✅ Same off-by-one
   as §11.8 but for non-clock numbers: "Gradient"'s date sat at **(203,80)** top-center with source
   `0x17`, but the forward `82`-scan grabbed the neighbouring **pointer's** angle getter (`0x0a`) and

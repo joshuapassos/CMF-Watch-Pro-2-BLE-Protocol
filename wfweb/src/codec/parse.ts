@@ -134,6 +134,8 @@ export interface SceneDrawable {
   h?: number;
   /** Anel de progresso (0x81): setor = valor/max. `color`=arco vetorial compacto; senão disco texturizado. */
   arc?: { max: number; color?: [number, number, number]; width?: number; colorOff?: number };
+  /** Drawable do container ALWAYS-ON (0x22): variante AOD, oculta no preview normal. */
+  aod?: boolean;
 }
 
 const SCENE_DRAWABLE_TAGS = new Set([0x30, 0x38, 0x70]);
@@ -155,7 +157,7 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
   if (bin.length < 0x2a || bin[0x24] !== 0x20) return out; // sem envelope → scan plano
   const sceneEnd = Math.min(0x27 + u16le(bin, 0x25), bin.length);
   // (ox,oy) = origem do container/grupo (rect do 0x68) herdada pelos filhos posicionados.
-  const walk = (off: number, end: number, ox: number, oy: number, inGroup: boolean): void => {
+  const walk = (off: number, end: number, ox: number, oy: number, inGroup: boolean, aod: boolean): void => {
     let i = off;
     while (i + 3 <= end) {
       const tag = bin[i];
@@ -163,12 +165,16 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
       const body = i + 3;
       if (body + ln > end) return; // janela malformada — aborta este nível
       if (tag === 0x20 || tag === 0x21) {
-        walk(body, body + ln, ox, oy, inGroup);
-        // 0x22 (AOD) fica fora do walker.
+        walk(body, body + ln, ox, oy, inGroup, aod);
+      } else if (tag === 0x22) {
+        // Container ALWAYS-ON (AOD): mesmos tipos de drawable, mas variante always-on. Percorre
+        // marcando aod=true p/ os ponteiros/imagens AOD parsearem pelo caminho TLV robusto (o scan
+        // plano não casava o pivot deles → "unpositioned"). Escondidos no preview normal (hideForMode).
+        walk(body, body + ln, ox, oy, inGroup, true);
       } else if (tag === 0x68) {
         // GRUPO (SDK sty_group_t): filhos posicionais distribuídos pelo firmware (spec 25 §6/§7).
         // Não emitimos como drawables (regride 357/376 — colidem com sprites top-level). Recursa só.
-        walk(body, body + ln, ox, oy, true);
+        walk(body, body + ln, ox, oy, true, aod);
       } else if (tag === 0x81 && ln >= 12 && bin[body] === 0x01) {
         // ANEL DE PROGRESSO (spec 25 §2 revisado pelo RE do 322): 0x81 = 1 disco cf5 (count=1)
         // recortado num SETOR em runtime (frac=valor/max, horário das 12h). NÃO é frame-sheet.
@@ -210,7 +216,7 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
           if (!(compact && width !== undefined && width > 24)) {
             out.push({
               tag, x: ax, y: ay, xOff: c, yOff: c + 2, w: aw, h: ah,
-              assetOff: ftbl ? ftbl.base : 0, frameCount: 1,
+              assetOff: ftbl ? ftbl.base : 0, frameCount: 1, aod,
               arc: { max, color, width, colorOff: compact ? c + 8 : undefined },
             });
           }
@@ -226,7 +232,7 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
         const count = ftbl ? ftbl.count : 0;
         const base = ftbl ? ftbl.base : 0;
         if (ft >= 0 && x >= -320 && x <= 480 && y >= -320 && y <= 480) {
-          const d: SceneDrawable = { tag, x, y, xOff: body + 3, yOff: body + 5, assetOff: base, frameCount: count };
+          const d: SceneDrawable = { tag, x, y, xOff: body + 3, yOff: body + 5, assetOff: base, frameCount: count, aod };
           // fonte de dado da COMPLICAÇÃO: attr-block `82` após o último `40 01 00` do corpo,
           // id em `82+0x14` (RE §4/§5 — mesmo layout do widget de texto).
           for (let k = ln - 3; k >= 6; k--) {
@@ -271,7 +277,7 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
       i = body + ln;
     }
   };
-  walk(0x24, sceneEnd, 0, 0, false);
+  walk(0x24, sceneEnd, 0, 0, false, false);
   return out;
 }
 
@@ -434,7 +440,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
       // ANEL DE PROGRESSO (0x81): tratado ANTES do guard de asset — o arco vetorial compacto
       // (371/364/366/372) não tem asset (assetOff=0). Disco texturizado (322) usa o asset.
       if (d.arc) {
-        const key = `arc,${d.x},${d.y}`;
+        const key = `arc,${d.x},${d.y},${d.aod ? "a" : "n"}`;
         if (placed.has(key)) continue;
         placed.add(key);
         const at = assetMap.get(d.assetOff);
@@ -443,7 +449,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
           cf: at ? at[0] : 5, w: d.w ?? (at ? at[1] : 0), h: d.h ?? (at ? at[2] : 0),
           assetOff: d.assetOff, assetLen: at ? at[3] : 0,
           x: d.x, y: d.y, mock: "percent", arcMax: d.arc.max,
-          color: d.arc.color, arcWidth: d.arc.width, colorOff: d.arc.colorOff,
+          color: d.arc.color, arcWidth: d.arc.width, colorOff: d.arc.colorOff, aod: d.aod || undefined,
         }));
         idx += 1;
         continue;
@@ -464,13 +470,13 @@ export function parseStructured(bin: Uint8Array): StructDial {
       if ((d.frameCount === 10 || d.frameCount === 11) && d.tag !== 0x70
           && !d.hasAttr && d.sourceId !== undefined
           && digitForSource(d.sourceId, 0, 0, 0) !== null) {
-        const key = `dig,${d.x},${d.y}`;
+        const key = `dig,${d.x},${d.y},${d.aod ? "a" : "n"}`;
         if (!placed.has(key)) {
           placed.add(key);
           layers.push(mkLayer({
             kind: "text", name: `Digit ${idx}`,
             cf, w, h, assetOff: d.assetOff, assetLen: alen,
-            x: d.x, y: d.y, mock: mockFromSourceId(d.sourceId), sourceId: d.sourceId,
+            x: d.x, y: d.y, mock: mockFromSourceId(d.sourceId), sourceId: d.sourceId, aod: d.aod || undefined,
           }));
           idx += 1;
         }
@@ -492,7 +498,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
       // dedupe por rect: nós irmãos = variantes (normal/AOD/estilo) do MESMO elemento.
       // (NB: dedup por fonte p/ separar as 3 mãos foi testado e REGREDIU — no 371 as 3 mãos
       // reusam UM sprite longo de 466px; desenhar 3 mãos longas idênticas fica pior que 1.)
-      const key = `${d.tag},${d.x},${d.y},${w},${h}`;
+      const key = `${d.tag},${d.x},${d.y},${w},${h},${d.aod ? "a" : "n"}`;
       if (placed.has(key)) continue;
       placed.add(key);
       const kind: LayerKind = d.tag === 0x70 ? "pointer" : "image";
@@ -506,6 +512,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
         mock: kind === "pointer" && d.sourceId !== undefined ? pointerRole(d.sourceId) : sheetMock,
         sourceId: d.sourceId,
         frames: d.frameCount > 1 ? d.frameCount : undefined,
+        aod: d.aod || undefined,
       }));
       idx += 1;
     }
@@ -659,9 +666,9 @@ export function parseStructured(bin: Uint8Array): StructDial {
           if (sourceId !== undefined) srcOff = i - 5;
         }
 
-        // Em sceneMode, imagens/ponteiros NORMAIS vêm da cena TLV — o scan plano só contribui TEXTO.
-        // EXCETO os da variante AOD (0x22), que o walker de cena pula: aqui é a única fonte deles.
-        if (sceneMode && kind !== "text" && !recAod) {
+        // Em sceneMode, imagens/ponteiros (normais E AOD) vêm da cena TLV; o scan plano só contribui
+        // TEXTO (normal e AOD). Assim os ponteiros AOD parseiam pelo caminho TLV robusto (walker de 0x22).
+        if (sceneMode && kind !== "text") {
           i += 1;
           continue;
         }

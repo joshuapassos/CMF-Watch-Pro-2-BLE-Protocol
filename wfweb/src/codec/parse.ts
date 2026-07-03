@@ -615,6 +615,8 @@ export function parseStructured(bin: Uint8Array): StructDial {
           mock = "seconds";
         }
 
+        let srcOff: number | undefined; // offset do byte de fonte p/ reescrever (Source no inspector persiste)
+
         // Correção OFF-BY-ONE do atlas de dígito (spec 25 §7 / RE 282/284/302/351): o attr-block do
         // elemento fica IMEDIATAMENTE ANTES da sua frame-table `61 0a/0b`, mas o findDelim procura
         // pra FRENTE e pega o `82`/`40 01 00` do PRÓXIMO elemento → X/Y e fonte do vizinho (número
@@ -651,6 +653,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
           if (s >= 1 && s <= 0x8d) {
             sourceId = s;
             mock = mockFromSourceId(s);
+            srcOff = i - 5; // a fonte real fica em i-5 → grava aqui p/ o rebind (Source) persistir
           }
         }
 
@@ -659,7 +662,6 @@ export function parseStructured(bin: Uint8Array): StructDial {
         // conhecidas de 284/288/298/303 (branco p/ dials de dígito branco).
         let color: [number, number, number] | undefined;
         let colorOff: number | undefined;
-        let srcOff: number | undefined;
         if (kind === "text" && cf === 13 && i >= 10 && bin[i - 7] === 0x01 && bin[i - 6] === 0xff) {
           const rgb: [number, number, number] = [bin[i - 10], bin[i - 9], bin[i - 8]];
           if (rgb[0] + rgb[1] + rgb[2] > 0) { color = rgb; colorOff = i - 10; }

@@ -218,8 +218,11 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
   for (let k = 0; k < dim * dim; k++) data[k * 4 + 3] = 255;
 
   // Filtro por modo: no preview NORMAL escondemos as variantes always-on (0x22); no modo AOD
-  // mostramos SÓ elas. O fundo é trocado à parte (setAod) e sempre desenha.
-  const hideForMode = (l: Layer): boolean => l.kind !== "background" && (aod ? !l.aod : !!l.aod);
+  // mostramos SÓ elas. O FUNDO no AOD: se o dial tem um frame AOD dedicado (dial.aod), o setAod já
+  // trocou o fundo p/ ele → desenha; senão o always-on é PRETO (a maioria dos dials, ex. Gradient) →
+  // escondemos a cena normal. Fora do fundo, o filtro é por tag aod.
+  const hideForMode = (l: Layer): boolean =>
+    l.kind === "background" ? (aod && !dial.aod) : (aod ? !l.aod : !!l.aod);
 
   // fundo + imagens estáticas (+ frame-sheets de complicação: frame escolhido pelo valor MOCK,
   // como o seletor do firmware: frame = (count−1)·val/100 — os valores casam com os thumbnails

@@ -144,10 +144,8 @@ export class App {
     if (!this.dial) return;
     const [hh, mm, ss] = this.clockParts();
     const img = renderAt(this.dial, hh, mm, ss, this.jpegCache, this.aodMode);
-    if (this.aodMode) { // AOD = tela always-on dimmed
-      const d = img.data;
-      for (let i = 0; i < d.length; i += 4) { d[i] *= 0.5; d[i + 1] *= 0.5; d[i + 2] *= 0.5; }
-    }
+    // AOD real = fundo preto + os elementos always-on na cor do próprio atlas (sem dim extra: o
+    // renderAt já esconde a cena normal quando não há frame AOD dedicado).
     drawToCanvas(this.canvas, img);
     // guias de alinhamento (durante o snap do drag)
     if (this.guides.length) {

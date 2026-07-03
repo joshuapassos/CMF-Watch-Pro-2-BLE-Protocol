@@ -349,6 +349,7 @@ export class App {
       <div class="field"><label>Data (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visible</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
       <div class="field full"><button class="btn wide" id="fReplace">🖼 Replace image…</button></div>
+      <div class="field full"><button class="btn wide" id="fErase">🧽 Erase (keep size)</button></div>
       <div class="field full"><button class="btn wide" id="fDup">⧉ Duplicate layer</button></div>
       <div class="field full"><button class="btn wide danger" id="fDelete">🗑 Delete layer</button></div>
     `;
@@ -434,6 +435,22 @@ export class App {
       this.refreshJson();
     });
     $("fReplace").addEventListener("click", () => this.replaceLayerImage(this.selected));
+    // Apaga a camada trocando seu asset por um raster TRANSPARENTE do mesmo w×h. Comprime pequeno
+    // (≤ len original) → SAME-FOOTPRINT: o export fica com o tamanho idêntico e instala pelo re-skin
+    // (delete muda o tamanho → a065=0x0a no relógio). Ideal p/ "sumir" com um elemento (ex.: colon).
+    $("fErase").addEventListener("click", () => {
+      this.pushUndo();
+      const zeros = new Uint8ClampedArray(l.w * l.h * 4); // RGBA 0 = transparente (cf5/24) / preto (cf4)
+      const sz = setLayerImageRaster(l, zeros);
+      if (sz > l.assetLen) {
+        l.newPayload = undefined;
+        this.status(`Erase failed: transparent payload ${sz}B > ${l.assetLen}B (asset original).`, "err");
+        return;
+      }
+      this.render();
+      this.refreshJson();
+      this.status(`Layer "${l.name}" erased — transparent, ${sz}B ≤ ${l.assetLen}B (same footprint → installs).`, "ok");
+    });
     $("fDup").addEventListener("click", () => {
       if (!this.dial) return;
       this.pushUndo();
@@ -657,9 +674,14 @@ export class App {
         bytes = encodeInPlace(this.dial);
       }
       downloadBytes(bytes, outName(this.dial.perDialId, this.dial.name));
+      // same-footprint (tamanho idêntico ao original) é o único caminho de re-skin PROVADO no relógio;
+      // tamanho diferente (delete/add) tende a a065=0x0a (armazena, não ativa).
+      const sameFootprint = bytes.length === this.dial.raw.length;
       this.status(
-        `Exported (${bytes.length}B${structural ? ", rebuild ✓ validated" : ""}). Install via the 0x9075 pipeline.`,
-        "ok",
+        sameFootprint
+          ? `Exported (${bytes.length}B) — same-footprint ✓ installs via re-skin (0x9075, old_id = active dial).`
+          : `Exported (${bytes.length}B) — ⚠ footprint changed (${this.dial.raw.length}→${bytes.length}); the watch may store-not-activate (a065=0x0a). Use “Erase (keep size)” instead of Delete/Duplicate to keep it installable.`,
+        sameFootprint ? "ok" : "err",
       );
     } catch (err) {
       this.status("Export failed: " + (err as Error).message, "err");

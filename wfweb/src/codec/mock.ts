@@ -73,7 +73,7 @@ export function mockFromSourceId(id: number): MockKind {
   if (id === 0x18) return "weekday";
   if (id === 0x19 || id === 0x48 || id === 0x74 || id === 0x75) return "bpm";
   if (id === 0x1b) return "battery";
-  if (id === 0x24) return "temp";
+  if (id === 0x24 || id === 0x5f) return "temp";
   if (id === 0x36) return "steps";
   if (id === 0x37 || id === 0x61) return "distance";
   if (id === 0x60) return "kcal";
@@ -119,7 +119,8 @@ export const DATA_SOURCES: Array<{ id: number; label: string; mock: MockKind }> 
   { id: 0x61, label: "Distance", mock: "distance" },
   { id: 0x48, label: "Heart rate", mock: "bpm" },
   { id: 0x1b, label: "Battery %", mock: "battery" },
-  { id: 0x24, label: "Temperature", mock: "temp" },
+  { id: 0x5f, label: "Weather temp", mock: "temp" },
+  { id: 0x24, label: "Temperature (local)", mock: "temp" },
   { id: 0x25, label: "% of goal", mock: "percent" },
   { id: 0x70, label: "Hour hand", mock: "hour" },
   { id: 0x71, label: "Minute hand", mock: "minute" },

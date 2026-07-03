@@ -57,6 +57,28 @@ body {
 .btn.file { display: inline-flex; align-items: center; }
 .chk { color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
 
+/* Segmented control: which screen you're editing (Normal vs AOD) */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg-btn {
+  background: var(--panel2); color: var(--muted); border: 0; padding: 6px 12px;
+  cursor: pointer; font-size: 13px; border-right: 1px solid var(--line);
+}
+.seg-btn:last-child { border-right: 0; }
+.seg-btn:hover:not(:disabled) { color: var(--fg); }
+.seg-btn:disabled { opacity: 0.35; cursor: default; }
+.seg-btn.active { background: var(--accent2); color: #06121f; font-weight: 600; }
+#segAod.active { background: #8a7bd8; color: #0a0714; }
+
+/* AOD editing mode: tint the workspace so it's unmistakable which screen is active */
+body.aod-mode #left { border-top: 2px solid #8a7bd8; }
+body.aod-mode #layersTitle { color: #b3a6f0; }
+body.aod-mode #preview { box-shadow: 0 0 0 6px #12101c, 0 0 0 8px #8a7bd8, 0 10px 40px rgba(0,0,0,0.6); }
+.aod-badge { display: none; }
+body.aod-mode .aod-badge {
+  display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 10px;
+  background: #8a7bd8; color: #0a0714; font-size: 11px; font-weight: 600; vertical-align: middle;
+}
+
 #layout {
   flex: 1;
   display: grid;

@@ -19,12 +19,15 @@
       <button id="btnExport" class="btn" disabled>💾 Export .bin</button>
       <button id="btnPlay" class="btn" disabled>▶</button>
       <span id="clock" class="clock">10:08:30</span>
-      <label class="chk"><input id="chkAod" type="checkbox" disabled /> AOD</label>
+      <div class="seg" id="screenSeg" role="tablist" title="Which screen you are editing">
+        <button class="seg-btn active" id="segNormal" type="button">🖥 Normal</button>
+        <button class="seg-btn" id="segAod" type="button" disabled>🌙 AOD</button>
+      </div>
     </header>
 
     <main id="layout">
       <aside id="left">
-        <h2>Layers</h2>
+        <h2 id="layersTitle">Layers</h2>
         <ul id="layerList" class="layers"></ul>
       </aside>
 

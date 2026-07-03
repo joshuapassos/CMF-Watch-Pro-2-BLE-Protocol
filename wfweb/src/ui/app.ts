@@ -48,7 +48,8 @@ export class App {
     $("btnExport").addEventListener("click", () => this.onExport());
     $("btnPlay").addEventListener("click", () => this.togglePlay());
     $("btnApplyJson").addEventListener("click", () => this.onApplyJson());
-    $<HTMLInputElement>("chkAod").addEventListener("change", (e) => this.onAod((e.target as HTMLInputElement).checked));
+    $("segNormal").addEventListener("click", () => this.onAod(false));
+    $("segAod").addEventListener("click", () => this.onAod(true));
     // drag na canvas
     this.canvas.addEventListener("pointerdown", (e) => this.onPointerDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.onPointerMove(e));
@@ -90,7 +91,13 @@ export class App {
     try {
       const dial = parseStructured(bytes);
       this.dial = dial;
-      this.selected = dial.layers.findIndex((l) => l.kind !== "background");
+      // novo dial sempre abre na tela NORMAL (reseta o contexto AOD isolado)
+      this.aodMode = false;
+      document.body.classList.remove("aod-mode");
+      $("segNormal").classList.add("active");
+      $("segAod").classList.remove("active");
+      $("layersTitle").textContent = "Layers";
+      this.selected = dial.layers.findIndex((l) => l.kind !== "background" && !l.aod);
       await this.predecodeJpegs();
       this.enableUi(true);
       this.refreshAll();
@@ -121,7 +128,10 @@ export class App {
 
   private enableUi(on: boolean): void {
     for (const id of ["btnExport", "btnPlay", "btnApplyJson"]) ($(id) as HTMLButtonElement).disabled = !on;
-    ($<HTMLInputElement>("chkAod")).disabled = !on || !this.dial?.aod;
+    // AOD editing is available only when the dial actually has an always-on variant.
+    const hasAod = !!on && (!!this.dial?.aod || (this.dial?.layers.some((l) => l.aod) ?? false));
+    ($("segAod") as HTMLButtonElement).disabled = !hasAod;
+    if (!hasAod && this.aodMode) this.onAod(false); // reverte se o novo dial não tem AOD
   }
 
   // ---- Render ----
@@ -288,6 +298,8 @@ export class App {
     if (!d) return;
     d.layers.forEach((l, i) => {
       if (l.deleted) return; // camada removida — some da lista (export faz rebuild sem ela)
+      if (l.kind === "other") return; // "unpositioned": sem X/Y decodificado — não renderiza nem edita
+      if (!!l.aod !== this.aodMode) return; // edição isolada: AOD mostra só variantes AOD; normal, só normais
       const li = document.createElement("li");
       if (i === this.selected) li.classList.add("sel");
       if (!l.visible) li.classList.add("hidden-layer");
@@ -575,6 +587,22 @@ export class App {
     if (!this.dial) return;
     this.aodMode = on;
     setAod(this.dial, on); // troca o fundo p/ a variante AOD (arte real always-on)
+    // UI isolada: destaca o workspace, alterna o segmentado e o título da lista.
+    document.body.classList.toggle("aod-mode", on);
+    $("segNormal").classList.toggle("active", !on);
+    $("segAod").classList.toggle("active", on);
+    $("layersTitle").innerHTML = on
+      ? `Layers <span class="aod-badge">AOD · always-on</span>`
+      : "Layers";
+    // Seleção passa a apontar p/ uma camada DO MODO atual (não a escondida do outro modo).
+    const inMode = this.dial.layers
+      .map((l, i) => ({ l, i }))
+      .filter(({ l }) => !l.deleted && l.kind !== "other" && !!l.aod === on);
+    if (!inMode.some(({ i }) => i === this.selected)) {
+      this.selected = inMode.length ? inMode[0].i : -1;
+    }
+    this.buildLayerList();
+    this.buildInspector();
     this.render();
   }
 

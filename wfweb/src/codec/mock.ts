@@ -122,6 +122,10 @@ export const DATA_SOURCES: Array<{ id: number; label: string; mock: MockKind }> 
   { id: 0x5f, label: "Weather temp", mock: "temp" },
   { id: 0x24, label: "Temperature (local)", mock: "temp" },
   { id: 0x25, label: "% of goal", mock: "percent" },
+  // Descobertos varrendo o corpus (aparecem sempre colados no 0x5f = clima). Significado inferido
+  // pela posição/nº de dígitos — não 100% confirmado. Use "Source id (raw)" p/ varrer se preciso.
+  { id: 0x1a, label: "Weather metric (0x1a · 3-digit)", mock: "generic" },
+  { id: 0x1e, label: "Weather metric (0x1e · 4-digit)", mock: "generic" },
   { id: 0x70, label: "Hour hand", mock: "hour" },
   { id: 0x71, label: "Minute hand", mock: "minute" },
   { id: 0x72, label: "Second hand", mock: "seconds" },

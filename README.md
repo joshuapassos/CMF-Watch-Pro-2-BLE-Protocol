@@ -739,13 +739,16 @@ all 103 dials **byte-exact** (the X/Y write-offset fix above cleared the last mi
 
 ### 11.9 AOD-container skip + standalone img_number source (2026-07-03, dial "Gradient")
 
-- **Skip the `0x22` AOD container in the FLAT scan too.** ✅ The scene walker already skips `0x22`,
+- **Separate the `0x22` AOD container into its own view.** ✅ The scene walker already skips `0x22`,
   but the flat text/number scan walked the whole `[0x30, firstAsset)` — so it emitted the
   **always-on (AOD) variant** of each element as a normal layer. On "Gradient" the AOD **gray** date
-  atlas (offset in `0x22`) drew on top of the **red** normal one; skipping `0x22` records leaves only
-  the red normal variant. Net oracle win across the corpus (**284: 31%→21%**, +18 others) — the AOD
-  variants were overdrawing many dials. The AOD screen should be its own view; it must not bleed into
-  the normal preview.
+  atlas (offset in `0x22`) drew on top of the **red** normal one. Fix: tag every `0x22` record with
+  `layer.aod=true` (with its own dedup set) and let `renderAt(…, aod)` show them **only** in AOD mode
+  (normal mode hides `aod` layers; AOD mode hides normal ones; the background is swapped by `setAod`
+  and always draws). Net oracle win in normal mode across the corpus (**284: 31%→21%**, +18 others) —
+  the AOD variants were overdrawing many dials — and the editor's AOD toggle now shows the real
+  dimmed always-on layout (gray complications) instead of the normal ones. (AOD-specific *hands* in
+  `0x22` still parse as unpositioned `other` in some dials — a known refinement.)
 - **Standalone `0x60` img_number (cnt=10) — source at `−5`, off-by-one forward.** ✅ Same off-by-one
   as §11.8 but for non-clock numbers: "Gradient"'s date sat at **(203,80)** top-center with source
   `0x17`, but the forward `82`-scan grabbed the neighbouring **pointer's** angle getter (`0x0a`) and

@@ -211,17 +211,22 @@ function bbox(g: RgbaImage): [number, number] {
 }
 
 /** Compõe o dial num buffer RGBA 466² com os ponteiros rotacionados p/ hh:mm:ss. Port de render_at. */
-export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, jpeg?: JpegCache): RgbaImage {
+export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, jpeg?: JpegCache, aod = false): RgbaImage {
   const dim = CANVAS_DIM;
   const data = new Uint8ClampedArray(dim * dim * 4);
   // fundo preto opaco.
   for (let k = 0; k < dim * dim; k++) data[k * 4 + 3] = 255;
+
+  // Filtro por modo: no preview NORMAL escondemos as variantes always-on (0x22); no modo AOD
+  // mostramos SÓ elas. O fundo é trocado à parte (setAod) e sempre desenha.
+  const hideForMode = (l: Layer): boolean => l.kind !== "background" && (aod ? !l.aod : !!l.aod);
 
   // fundo + imagens estáticas (+ frame-sheets de complicação: frame escolhido pelo valor MOCK,
   // como o seletor do firmware: frame = (count−1)·val/100 — os valores casam com os thumbnails
   // oficiais: 80% meta/bateria, TUE, JUL, 68 BPM etc.)
   for (const layer of dial.layers) {
     if (!layer.visible || layer.deleted || layer.kind === "other" || layer.kind === "text" || layer.kind === "pointer") continue;
+    if (hideForMode(layer)) continue;
     // ANEL DE PROGRESSO: disco recortado num setor = valor-mock / arcMax (spec 25 §2, RE do 322).
     if (layer.kind === "arc") {
       const raw = mockSample(layer.mock, hh, mm, ss);
@@ -262,7 +267,7 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
   const angHour = (hh % 12) * 30 + mm * 0.5;
   const angMin = mm * 6 + ss * 0.1;
   const angSec = ss * 6;
-  const ptrs = dial.layers.filter((l) => l.visible && !l.deleted && l.kind === "pointer").slice();
+  const ptrs = dial.layers.filter((l) => l.visible && !l.deleted && l.kind === "pointer" && !hideForMode(l)).slice();
   ptrs.sort((a, b) => a.h - b.h);
   const n = ptrs.length;
   ptrs.forEach((l, i) => {
@@ -287,6 +292,7 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
   // TEXTO/NÚMERO: desenha o valor-mock com os glifos reais do atlas.
   for (const l of dial.layers) {
     if (!l.visible || l.deleted || l.kind !== "text") continue;
+    if (hideForMode(l)) continue;
     // Fonte de dígito ÚNICO (tens/units, spec 25 §1.1) → um dígito; senão o valor-mock inteiro.
     const single = l.sourceId !== undefined ? digitForSource(l.sourceId, hh, mm, ss) : null;
     const s = single ?? mockSample(l.mock, hh, mm, ss);

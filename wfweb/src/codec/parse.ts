@@ -389,6 +389,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
 
   // 2) Pré-scan de NÓS DE GRUPO `68 [id] 00 48 15 00 [X][Y][W][H]`.
   const placed = new Set<string>();
+  const placedAod = new Set<string>(); // dedup separado p/ registros da variante AOD (0x22)
   const groups: Array<[number, number, number, number, number]> = []; // [offset,x,y,w,h]
   {
     let g = 0x30;
@@ -512,7 +513,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
 
   let i = 0x30;
   while (i + 8 < firstAsset) {
-    if (inAod(i)) { i += 1; continue; } // variante AOD (0x22) — não emite no preview normal
+    const recAod = inAod(i); // registro na variante ALWAYS-ON (0x22): marcado aod, oculto no preview normal
     if (bin[i] === 0x61 && (bin[i + 1] === 0x01 || bin[i + 1] === 0x0a || bin[i + 1] === 0x0b) && bin[i + 2] === 0) {
       const ptr = u32le(bin, i + 3);
       const asset = assetMap.get(ptr);
@@ -658,19 +659,22 @@ export function parseStructured(bin: Uint8Array): StructDial {
           if (sourceId !== undefined) srcOff = i - 5;
         }
 
-        // Em sceneMode, imagens/ponteiros vêm da cena TLV — o scan plano só contribui TEXTO.
-        if (sceneMode && kind !== "text") {
+        // Em sceneMode, imagens/ponteiros NORMAIS vêm da cena TLV — o scan plano só contribui TEXTO.
+        // EXCETO os da variante AOD (0x22), que o walker de cena pula: aqui é a única fonte deles.
+        if (sceneMode && kind !== "text" && !recAod) {
           i += 1;
           continue;
         }
-        // dedup normal/AOD
+        // dedup por (ptr,x,y) — AOD tem set PRÓPRIO p/ não deduplicar (nem afetar) os records normais,
+        // mantendo a tela normal byte-idêntica ao que o skip de AOD produzia.
         const key = `${ptr},${x},${y}`;
+        const dedup = recAod ? placedAod : placed;
         if (kind !== "other") {
-          if (placed.has(key)) {
+          if (dedup.has(key)) {
             i += 1;
             continue;
           }
-          placed.add(key);
+          dedup.add(key);
         }
         const kname =
           kind === "pointer" ? `Pointer ${idx}`
@@ -686,6 +690,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
         layers.push(mkLayer({
           kind, name: kname, cf, w, h, assetOff: ptr, assetLen: alen, visible: !edgePhantom,
           x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId, color, colorOff, srcOff,
+          aod: recAod || undefined,
         }));
         idx += 1;
       }

@@ -77,6 +77,8 @@ export interface Layer {
   deleted?: boolean;
   /** Camada NOVA (clone de um nó existente) — inserida no export via rebuild. */
   isClone?: boolean;
+  /** Variante ALWAYS-ON (do container `0x22`): só aparece no modo AOD do editor, não na tela normal. */
+  aod?: boolean;
   /** Chave `assetOff,x,y` do nó-fonte a clonar (bytes comprovados) no rebuild. */
   sourceKey?: string;
 }

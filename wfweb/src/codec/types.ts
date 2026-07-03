@@ -79,6 +79,12 @@ export interface Layer {
   isClone?: boolean;
   /** Variante ALWAYS-ON (do container `0x22`): só aparece no modo AOD do editor, não na tela normal. */
   aod?: boolean;
+  /** Largura/altura do RECT do picregion de um img_number standalone (distribui os dígitos). W=0 =
+   *  amontoa; setar largura espalha N dígitos. Offsets p/ reescrever in-place. */
+  rectW?: number;
+  rectH?: number;
+  rectWOff?: number;
+  rectHOff?: number;
   /** Chave `assetOff,x,y` do nó-fonte a clonar (bytes comprovados) no rebuild. */
   sourceKey?: string;
 }

@@ -767,6 +767,21 @@ all 103 dials **byte-exact** (the X/Y write-offset fix above cleared the last mi
   "Jun 09" and a separate `0x24` temp), so `0x17` is date, not temp. A dial whose watch shows a
   temperature in a `0x17` slot is a user-configured complication (device state), not the file default.
 
+### 11.10 img_number field width (digit spread) — 🟡 experimental
+
+Rebinding a 2-digit field (e.g. the date DD) to a source that yields a **3-digit** value (temperature
+`0x24` returns an integer that can be 3 digits, e.g. 366) makes the digits **crowd/overlap** on the
+watch. `img_number` draws only the value's digits (no "."/"°"); the count is value-driven. The
+standalone img_number header (`60 34 00 | 01 2d 00 | [X u16][Y u16][W u16][H u16] … | [src] 00
+[scale] 00`) carries a **picregion width `W` at `i-14`** (relative to the `61 0a 00` frame-table)
+that is **0** for the date/clock fields. The hypothesis (best available; not verifiable off-device —
+no firmware locally, no 3-digit img_number precedent in the corpus): the firmware distributes the N
+digits across `W`, so `W=0` crowds them and setting `W ≈ glyph_w × n_digits` (e.g. 90 for three
+30px glyphs) spreads them. wfweb captures `rectW/rectH` (+offsets) for standalone img_numbers,
+exposes a **"Digits width"** inspector control, writes it **in-place (2 bytes, same-footprint)**, and
+the preview distributes the digits across `W`. Normal-mode render for the 103 corpus dials is
+unchanged (they all have `W=0`); roundtrip stays byte-exact. **Confirm on-device.**
+
 ---
 
 ## 12. Bulk transfer & OTA details

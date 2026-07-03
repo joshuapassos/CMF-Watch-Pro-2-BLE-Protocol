@@ -330,12 +330,20 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
     const spans = widths.slice(0, 10).map(([lo, hi]) => hi - lo);
     const proportional = Math.max(...spans) - Math.min(...spans) > gw / 6;
     const gap = Math.max(gw >> 3, 1);
+    // Largura do rect do img_number: o firmware distribui os N dígitos ao longo dela. rectW>0 →
+    // um slot por dígito (espalha 3+ dígitos); rectW=0 → avanço por largura de glifo (comportamento
+    // padrão). Espelha o que a edição de "Digits width" vai fazer no relógio.
+    const slotW = l.rectW && l.rectW > 0 && !proportional ? l.rectW / digits.length : 0;
     let cx = l.x;
     const top = l.y;
+    let slot = 0;
     for (const d of digits) {
       const g = glyphs[d];
       if (g) {
-        if (proportional || d >= 10) {
+        if (slotW > 0) {
+          blend(data, dim, g, Math.round(l.x + slot * slotW + (slotW - gw) / 2), top);
+          slot += 1;
+        } else if (proportional || d >= 10) {
           const [lo, hi] = widths[d];
           blend(data, dim, g, cx - lo, top);
           cx += hi - lo + gap;

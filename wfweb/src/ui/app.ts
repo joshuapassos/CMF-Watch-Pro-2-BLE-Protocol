@@ -265,6 +265,7 @@ export class App {
       ["% goal / battery", 0, 100, simEnv.percent, (v) => { simEnv.percent = v; simEnv.battery = v; }, () => `${simEnv.percent}%`],
       ["Steps", 0, 15000, simEnv.steps, (v) => (simEnv.steps = v), () => String(simEnv.steps)],
       ["Heart rate", 40, 200, simEnv.bpm, (v) => (simEnv.bpm = v), () => `${simEnv.bpm} bpm`],
+      ["Temperature", 0, 999, simEnv.temp, (v) => (simEnv.temp = v), () => `${simEnv.temp}°`],
       ["Weekday", 0, 6, simEnv.weekday, (v) => (simEnv.weekday = v), () => ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][simEnv.weekday]],
     ];
     body.innerHTML = "";
@@ -355,6 +356,7 @@ export class App {
       ${isDataBound ? `<div class="field"><label>Source${persistNote}</label><select id="fSrc"></select></div>` : ""}
       ${hasColor ? `<div class="field"><label>Color${l.colorOff === undefined ? " (preview only)" : ""}</label><input type="color" id="fColor" value="${hex}"></div>` : ""}
       ${isArc ? `<div class="field"><label>Max (ring)</label><input type="number" id="fMax" value="${l.arcMax ?? 100}"></div>` : ""}
+      ${l.rectWOff !== undefined ? `<div class="field"><label title="Rect width the firmware spreads the digits across. 0 = auto (crowds &gt;2 digits). Set ~glyph_w × n_digits (e.g. 90 for 3).">Digits width</label><input type="number" id="fRectW" value="${l.rectW ?? 0}" min="0" max="466"></div>` : ""}
       ${l.frames && l.frames > 1 && !isArc ? `<div class="field"><label>Frame</label><input type="range" id="fFrame" min="0" max="${l.frames - 1}" value="${l.previewFrame ?? 0}"><span id="fFrameV">${l.previewFrame ?? "auto"}</span></div>` : ""}
       <div class="field"><label>Data (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visible</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
@@ -409,6 +411,7 @@ export class App {
     bindNum("fPX", (v) => (l.pivotX = v));
     bindNum("fPY", (v) => (l.pivotY = v));
     if (isArc) bindNum("fMax", (v) => (l.arcMax = v || 100));
+    if (l.rectWOff !== undefined) bindNum("fRectW", (v) => (l.rectW = Math.max(0, Math.min(466, v))));
 
     const frameSl = document.getElementById("fFrame") as HTMLInputElement | null;
     if (frameSl) {

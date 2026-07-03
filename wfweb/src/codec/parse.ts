@@ -616,6 +616,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
         }
 
         let srcOff: number | undefined; // offset do byte de fonte p/ reescrever (Source no inspector persiste)
+        let rectW: number | undefined, rectH: number | undefined, rectWOff: number | undefined, rectHOff: number | undefined;
 
         // Correção OFF-BY-ONE do atlas de dígito (spec 25 §7 / RE 282/284/302/351): o attr-block do
         // elemento fica IMEDIATAMENTE ANTES da sua frame-table `61 0a/0b`, mas o findDelim procura
@@ -649,6 +650,12 @@ export function parseStructured(bin: Uint8Array): StructDial {
           // o roundtrip byte-exato (e o same-footprint no re-export).
           xOff = i - 18;
           yOff = i - 16;
+          // RECT do picregion (distribui os dígitos): W@i-14, H@i-12. W=0 = firmware amontoa os
+          // dígitos; setar largura espalha N dígitos (ex. temp 3 dígitos num campo de data 2 dígitos).
+          rectWOff = i - 14;
+          rectHOff = i - 12;
+          rectW = u16le(bin, i - 14);
+          rectH = u16le(bin, i - 12);
           const s = bin[i - 5];
           if (s >= 1 && s <= 0x8d) {
             sourceId = s;
@@ -699,7 +706,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
         layers.push(mkLayer({
           kind, name: kname, cf, w, h, assetOff: ptr, assetLen: alen, visible: !edgePhantom,
           x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId, color, colorOff, srcOff,
-          aod: recAod || undefined,
+          aod: recAod || undefined, rectW, rectH, rectWOff, rectHOff,
         }));
         idx += 1;
       }

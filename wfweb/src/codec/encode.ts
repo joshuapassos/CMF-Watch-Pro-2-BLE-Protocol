@@ -23,6 +23,9 @@ export function encodeInPlace(dial: StructDial): Uint8Array {
       out[layer.colorOff + 2] = layer.color[2];
     }
     if (layer.srcOff !== undefined && layer.sourceId !== undefined) out[layer.srcOff] = layer.sourceId;
+    // Largura/altura do rect do img_number (distribui os dígitos) — 2 bytes cada, same-footprint.
+    if (layer.rectWOff !== undefined && layer.rectW !== undefined) writeU16le(out, layer.rectWOff, layer.rectW);
+    if (layer.rectHOff !== undefined && layer.rectH !== undefined) writeU16le(out, layer.rectHOff, layer.rectH);
     if (layer.newPayload) {
       const payload = layer.newPayload;
       if (payload.length > layer.assetLen) {

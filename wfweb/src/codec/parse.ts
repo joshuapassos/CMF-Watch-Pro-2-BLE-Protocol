@@ -282,6 +282,27 @@ export function parseStructured(bin: Uint8Array): StructDial {
   for (const [o, cf, w, h, l] of assets) assetMap.set(o, [cf, w, h, l]);
   const firstAsset = assets.length ? assets.reduce((m, a) => Math.min(m, a[0]), Infinity) : bin.length;
 
+  // Faixa(s) de bytes do container AOD (`0x22`) na cena. Registros aqui são a variante always-on
+  // (dimmed, cinza) do MESMO elemento — o scan plano NÃO deve emiti-los como camadas normais (senão
+  // desenham por cima da variante normal, ex. a data cinza do Gradient sobre a vermelha). O walker de
+  // cena já pula 0x22 (linha ~167); o scan plano precisa do mesmo guard.
+  const aodRanges: Array<[number, number]> = [];
+  if (bin.length >= 0x2a && bin[0x24] === 0x20) {
+    const sceneEnd = Math.min(0x27 + u16le(bin, 0x25), bin.length);
+    const findAod = (off: number, end: number): void => {
+      let i = off;
+      while (i + 3 <= end) {
+        const tag = bin[i], ln = u16le(bin, i + 1), body = i + 3;
+        if (body + ln > end) break;
+        if (tag === 0x22) aodRanges.push([body, body + ln]);
+        else if (tag === 0x20 || tag === 0x21) findAod(body, body + ln);
+        i = body + ln;
+      }
+    };
+    findAod(0x24, sceneEnd);
+  }
+  const inAod = (o: number): boolean => aodRanges.some(([s, e]) => o >= s && o < e);
+
   const perDialId = bin.length >= 4 ? u32le(bin, 0) : 0;
   const sizeA = bin.length >= 0x1c ? u32le(bin, 0x18) : 0;
   let name = "";
@@ -491,6 +512,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
 
   let i = 0x30;
   while (i + 8 < firstAsset) {
+    if (inAod(i)) { i += 1; continue; } // variante AOD (0x22) — não emite no preview normal
     if (bin[i] === 0x61 && (bin[i + 1] === 0x01 || bin[i + 1] === 0x0a || bin[i + 1] === 0x0b) && bin[i + 2] === 0) {
       const ptr = u32le(bin, i + 3);
       const asset = assetMap.get(ptr);
@@ -598,12 +620,18 @@ export function parseStructured(bin: Uint8Array): StructDial {
         // amplo mexe X/Y de records onde o forward acertou → só dispara quando o forward NÃO achou
         // fonte (o bug do "hora sumida": 334/307/320/359/290) — não regride quem já funcionava.
         const cf13Colored = i >= 18 && bin[i - 7] === 0x01 && bin[i - 6] === 0xff;
-        // Dígito de RELÓGIO img_number (wrapper 0x60) cujo forward achou source-0: a fonte REAL está
-        // em i-5 (275 "10:10" hora 0x07 @306; grande fix no 351). Restrito a source-0 + fonte de
-        // dígito de relógio (0x02–0x11) — o override amplo (ignorando o forward) DESLOCA/DUPLICA
-        // dígitos já corretos (regride 323/307/302). Fica sem o minuto do 275 (forward pega weekday).
-        const clockDigit5 = bin[i - 5] >= 0x02 && bin[i - 5] <= 0x11 && bin[i - 24] === 0x60;
-        if (kind === "text" && (cf13Colored || (sourceId === undefined && precAttr) || (sourceId === 0 && precAttr && clockDigit5))) {
+        // img_number STANDALONE (cnt=10 `61 0a 00`, wrapper 0x60) mal-lido pelo forward off-by-one: a
+        // fonte real está em i-5 e a posição em i-18/i-16. Só corrige quando (a) o forward achou algo
+        // IMPOSSÍVEL p/ um número — source-0 (275 "10:10" hora; 351) ou uma fonte de ÂNGULO DE PONTEIRO
+        // (Gradient: número de data 0x17 @203,80 pegava 0xa do ponteiro vizinho) — E (b) i-18/i-16 é uma
+        // posição VÁLIDA e não-zero. O guard (b) exclui os filhos de grupo (relX=0 c/ âncora 0x80, ex.
+        // 340) que devem ser distribuídos pelo firmware — movê-los p/ (0,0) espalhava glifos (riscos).
+        const imgX = u16le(bin, i - 18), imgY = u16le(bin, i - 16);
+        const fwdPointer = sourceId === 0x0a || sourceId === 0x0e || sourceId === 0x12
+          || sourceId === 0x70 || sourceId === 0x71 || sourceId === 0x72;
+        const imgNumOffByOne = bin[i + 1] === 0x0a && bin[i - 24] === 0x60 && precAttr
+          && (sourceId === 0 || fwdPointer) && imgX >= 1 && imgX <= 466 && imgY >= 1 && imgY <= 466;
+        if (kind === "text" && (cf13Colored || (sourceId === undefined && precAttr) || imgNumOffByOne)) {
           x = u16le(bin, i - 18);
           y = u16le(bin, i - 16);
           // Reaponta os offsets de escrita p/ o X/Y REAL (i-18/i-16). Sem isso, xOff/yOff ficavam na

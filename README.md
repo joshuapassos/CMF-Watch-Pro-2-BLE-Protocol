@@ -737,6 +737,26 @@ Also: the **official store thumbnails are rendered at 10:10** (classic marketing
 matching the oracle time to 10:10 drops mean pixel-diff noticeably. wfweb's parser now round-trips
 all 103 dials **byte-exact** (the X/Y write-offset fix above cleared the last mismatches).
 
+### 11.9 AOD-container skip + standalone img_number source (2026-07-03, dial "Gradient")
+
+- **Skip the `0x22` AOD container in the FLAT scan too.** ✅ The scene walker already skips `0x22`,
+  but the flat text/number scan walked the whole `[0x30, firstAsset)` — so it emitted the
+  **always-on (AOD) variant** of each element as a normal layer. On "Gradient" the AOD **gray** date
+  atlas (offset in `0x22`) drew on top of the **red** normal one; skipping `0x22` records leaves only
+  the red normal variant. Net oracle win across the corpus (**284: 31%→21%**, +18 others) — the AOD
+  variants were overdrawing many dials. The AOD screen should be its own view; it must not bleed into
+  the normal preview.
+- **Standalone `0x60` img_number (cnt=10) — source at `−5`, off-by-one forward.** ✅ Same off-by-one
+  as §11.8 but for non-clock numbers: "Gradient"'s date sat at **(203,80)** top-center with source
+  `0x17`, but the forward `82`-scan grabbed the neighbouring **pointer's** angle getter (`0x0a`) and
+  the pointer's position → the number rendered at the pointer's spot with a bogus source. Fix: for a
+  `61 0a 00` img_number in a `0x60` wrapper, trust `−5`/`−18`/`−16` when the forward source is
+  *impossible for a number* (source-0 or a pointer-angle getter `0x0a/0e/12/70/71/72`) **and** the
+  `−18/−16` position is valid & non-zero (the non-zero guard skips group-child digits with `relX=0`).
+- **`0x17` = date (day of month), `0x24` = temperature — distinct.** Dial 340 uses **both** (`0x17`
+  "Jun 09" and a separate `0x24` temp), so `0x17` is date, not temp. A dial whose watch shows a
+  temperature in a `0x17` slot is a user-configured complication (device state), not the file default.
+
 ---
 
 ## 12. Bulk transfer & OTA details

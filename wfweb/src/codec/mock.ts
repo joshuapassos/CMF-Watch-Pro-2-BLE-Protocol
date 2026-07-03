@@ -105,30 +105,35 @@ export function digitForSource(id: number, hh: number, mm: number, ss: number): 
  * Fontes de dado editáveis (id do firmware 0x00–0x8d → rótulo + mock), spec 25 §1.1. Curado p/ o
  * dropdown do inspector: escrever o `id` no record rebinda a complicação/texto no relógio.
  */
-export const DATA_SOURCES: Array<{ id: number; label: string; mock: MockKind }> = [
-  { id: 0x07, label: "Hour (12h)", mock: "hour" },
-  { id: 0x04, label: "Hour (24h)", mock: "hour" },
-  { id: 0x0b, label: "Minute", mock: "minute" },
-  { id: 0x0f, label: "Second", mock: "seconds" },
-  { id: 0x13, label: "AM/PM", mock: "ampm" },
-  { id: 0x17, label: "Day of month", mock: "date" },
-  { id: 0x16, label: "Month", mock: "date" },
-  { id: 0x18, label: "Weekday", mock: "weekday" },
-  { id: 0x36, label: "Steps", mock: "steps" },
-  { id: 0x60, label: "Calories", mock: "kcal" },
-  { id: 0x61, label: "Distance", mock: "distance" },
-  { id: 0x48, label: "Heart rate", mock: "bpm" },
-  { id: 0x1b, label: "Battery %", mock: "battery" },
-  { id: 0x5f, label: "Weather temp", mock: "temp" },
-  { id: 0x24, label: "Temperature (local)", mock: "temp" },
-  { id: 0x25, label: "% of goal", mock: "percent" },
+export const DATA_SOURCES: Array<{ id: number; label: string; mock: MockKind; group: string }> = [
+  // Hora
+  { id: 0x07, label: "Hour (12h)", mock: "hour", group: "Time" },
+  { id: 0x04, label: "Hour (24h)", mock: "hour", group: "Time" },
+  { id: 0x0b, label: "Minute", mock: "minute", group: "Time" },
+  { id: 0x0f, label: "Second", mock: "seconds", group: "Time" },
+  { id: 0x13, label: "AM/PM", mock: "ampm", group: "Time" },
+  // Data
+  { id: 0x17, label: "Day of month", mock: "date", group: "Date" },
+  { id: 0x16, label: "Month", mock: "date", group: "Date" },
+  { id: 0x18, label: "Weekday", mock: "weekday", group: "Date" },
+  // Saúde / atividade
+  { id: 0x36, label: "Steps", mock: "steps", group: "Health" },
+  { id: 0x60, label: "Calories", mock: "kcal", group: "Health" },
+  { id: 0x61, label: "Distance", mock: "distance", group: "Health" },
+  { id: 0x48, label: "Heart rate", mock: "bpm", group: "Health" },
+  { id: 0x1b, label: "Battery %", mock: "battery", group: "Health" },
+  { id: 0x25, label: "% of goal", mock: "percent", group: "Health" },
+  // Clima
+  { id: 0x5f, label: "Weather temp", mock: "temp", group: "Weather" },
+  { id: 0x24, label: "Temperature (local)", mock: "temp", group: "Weather" },
   // Descobertos varrendo o corpus (aparecem sempre colados no 0x5f = clima). Significado inferido
   // pela posição/nº de dígitos — não 100% confirmado. Use "Source id (raw)" p/ varrer se preciso.
-  { id: 0x1a, label: "Weather metric (0x1a · 3-digit)", mock: "generic" },
-  { id: 0x1e, label: "Weather metric (0x1e · 4-digit)", mock: "generic" },
-  { id: 0x70, label: "Hour hand", mock: "hour" },
-  { id: 0x71, label: "Minute hand", mock: "minute" },
-  { id: 0x72, label: "Second hand", mock: "seconds" },
+  { id: 0x1a, label: "Weather metric (0x1a · 3-digit)", mock: "generic", group: "Weather" },
+  { id: 0x1e, label: "Weather metric (0x1e · 4-digit)", mock: "generic", group: "Weather" },
+  // Ponteiros analógicos
+  { id: 0x70, label: "Hour hand", mock: "hour", group: "Hands" },
+  { id: 0x71, label: "Minute hand", mock: "minute", group: "Hands" },
+  { id: 0x72, label: "Second hand", mock: "seconds", group: "Hands" },
 ];
 
 /** Papel de um PONTEIRO pela fonte em @36. 0x0a/0x70→hora, 0x0e/0x71→min, 0x12/0x72→seg. */

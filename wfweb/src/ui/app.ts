@@ -382,12 +382,30 @@ export class App {
     // Fonte de dado real (enum do firmware) — escreve sourceId (persistido no export via srcOff).
     if (isDataBound) {
       const srcSel = $<HTMLSelectElement>("fSrc");
+      // Se o campo usa um id que não está no catálogo, mostra-o como opção "(atual)" p/ não parecer
+      // que está setado no primeiro item da lista.
+      if (l.sourceId !== undefined && !DATA_SOURCES.some((s) => s.id === l.sourceId)) {
+        const cur = document.createElement("option");
+        cur.value = String(l.sourceId);
+        cur.textContent = `Current: 0x${l.sourceId.toString(16)} (unmapped)`;
+        cur.selected = true;
+        srcSel.appendChild(cur);
+      }
+      // Agrupa por categoria (Time / Date / Health / Weather / Hands) via <optgroup>.
+      let curGroup = "";
+      let og: HTMLOptGroupElement | null = null;
       for (const s of DATA_SOURCES) {
+        if (s.group !== curGroup) {
+          curGroup = s.group;
+          og = document.createElement("optgroup");
+          og.label = s.group;
+          srcSel.appendChild(og);
+        }
         const opt = document.createElement("option");
         opt.value = String(s.id);
         opt.textContent = `${s.label} (0x${s.id.toString(16)})`;
         if (s.id === l.sourceId) opt.selected = true;
-        srcSel.appendChild(opt);
+        (og ?? srcSel).appendChild(opt);
       }
       srcSel.addEventListener("change", () => {
         this.pushUndo();

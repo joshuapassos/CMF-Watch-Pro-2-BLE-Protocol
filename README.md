@@ -707,6 +707,36 @@ first body byte ≠ `0x20` → parser error −16; a child overrunning its windo
 **🟡 Still unproven (needs the watch, non-blocking):** uploading a from-scratch synthetic over `9075`
 and watching it render — the offline structural proof already covers what caused the `0a` reject.
 
+### 11.8 Render-fidelity refinements (2026-07-02, dial 275 "SlopeTime")
+
+Cross-referenced the wfweb render against the official store thumbnails (pixel oracle over all 103
+dials) and closed four gaps:
+
+- **Drawable/pointer X/Y are `i16` (signed).** ✅ Anchors can be **negative** for elements that
+  extend off-canvas — e.g. 275's **red second hand** sits at `Y = 0xFFFC = −4` (a 30×281 sprite,
+  source `0x12`, rotated from center off the top edge). Reading X/Y as `u16` (65532) made the
+  guard drop it. Parse both as signed and allow a small negative range.
+- **Digital clock digits can be top-level `0x60` img_numbers** (not only inside a `0x68` group), and
+  the **real data source is the `u8` at record offset `−5`** — the forward `82`-attr scan is
+  systematically **off-by-one** here and grabs the *next* sibling's attr (in 275 the minute digit
+  picked up the weekday `0x18`). 275's "10:10" = hour `0x07`@X≈306 + min `0x0b`@X≈369 with the `:`
+  as an adjacent static between them, each an 11-glyph atlas (`61 0a 00`). ⚠️ When correcting X/Y
+  from `−18/−16`, the **write offsets must move too**, or a re-export corrupts those bytes (breaks
+  same-footprint → `0a`).
+- **Multi-variant complication slots: the active metric is NOT in the `.bin`.** ⚠️ A configurable
+  complication is authored as **N `0x68` group nodes stacked at the same `(x,y)`**, each bound to a
+  different source (275's two circles: `0x1e/0x6a/0x48/0x24/0x19` per slot — *option/style ids*, not
+  the shown metric); the two circles are byte-identical apart from their rect + an instance byte
+  (`0x79`/`0x7a`). Which metric shows (STEPS vs KCAL vs …) is **device RAM/config state**, so a
+  static preview cannot reproduce it from the file — best-effort only.
+- **Edge-anchored inactive complications** (e.g. bpm text at `(446,0)`, seen on 275/302/325/365/375)
+  are slots the firmware doesn't draw in the default view — their value can't even fit before the
+  canvas edge. Treat as hidden in the preview.
+
+Also: the **official store thumbnails are rendered at 10:10** (classic marketing time), not 10:12 —
+matching the oracle time to 10:10 drops mean pixel-diff noticeably. wfweb's parser now round-trips
+all 103 dials **byte-exact** (the X/Y write-offset fix above cleared the last mismatches).
+
 ---
 
 ## 12. Bulk transfer & OTA details

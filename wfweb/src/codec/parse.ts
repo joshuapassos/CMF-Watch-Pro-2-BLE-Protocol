@@ -216,14 +216,16 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
           }
         }
       } else if (!inGroup && SCENE_DRAWABLE_TAGS.has(tag) && ln >= 16 && bin[body] === 0x01) {
-        const x = ox + u16le(bin, body + 3);
-        const y = oy + u16le(bin, body + 5);
+        // X/Y são i16 (SDK sty_picture_t.x/y): âncoras podem ser NEGATIVAS p/ elementos que saem do
+        // canvas (ex. 275 ponteiro de segundos Y=−4). Ler como u16 (65532) fazia o guard descartá-lo.
+        const x = ox + i16le(bin, body + 3);
+        const y = oy + i16le(bin, body + 5);
         // frame-table `61 [count][base][ids]` dentro do corpo.
         const ftbl = findFrameTable(bin, body, ln, isAsset);
         const ft = ftbl ? ftbl.at : -1;
         const count = ftbl ? ftbl.count : 0;
         const base = ftbl ? ftbl.base : 0;
-        if (ft >= 0 && x <= 480 && y <= 480) {
+        if (ft >= 0 && x >= -320 && x <= 480 && y >= -320 && y <= 480) {
           const d: SceneDrawable = { tag, x, y, xOff: body + 3, yOff: body + 5, assetOff: base, frameCount: count };
           // fonte de dado da COMPLICAÇÃO: attr-block `82` após o último `40 01 00` do corpo,
           // id em `82+0x14` (RE §4/§5 — mesmo layout do widget de texto).
@@ -596,9 +598,19 @@ export function parseStructured(bin: Uint8Array): StructDial {
         // amplo mexe X/Y de records onde o forward acertou → só dispara quando o forward NÃO achou
         // fonte (o bug do "hora sumida": 334/307/320/359/290) — não regride quem já funcionava.
         const cf13Colored = i >= 18 && bin[i - 7] === 0x01 && bin[i - 6] === 0xff;
-        if (kind === "text" && (cf13Colored || (sourceId === undefined && precAttr))) {
+        // Dígito de RELÓGIO img_number (wrapper 0x60) cujo forward achou source-0: a fonte REAL está
+        // em i-5 (275 "10:10" hora 0x07 @306; grande fix no 351). Restrito a source-0 + fonte de
+        // dígito de relógio (0x02–0x11) — o override amplo (ignorando o forward) DESLOCA/DUPLICA
+        // dígitos já corretos (regride 323/307/302). Fica sem o minuto do 275 (forward pega weekday).
+        const clockDigit5 = bin[i - 5] >= 0x02 && bin[i - 5] <= 0x11 && bin[i - 24] === 0x60;
+        if (kind === "text" && (cf13Colored || (sourceId === undefined && precAttr) || (sourceId === 0 && precAttr && clockDigit5))) {
           x = u16le(bin, i - 18);
           y = u16le(bin, i - 16);
+          // Reaponta os offsets de escrita p/ o X/Y REAL (i-18/i-16). Sem isso, xOff/yOff ficavam na
+          // posição do forward e o encodeInPlace gravava o valor corrigido no lugar errado → quebrava
+          // o roundtrip byte-exato (e o same-footprint no re-export).
+          xOff = i - 18;
+          yOff = i - 16;
           const s = bin[i - 5];
           if (s >= 1 && s <= 0x8d) {
             sourceId = s;
@@ -637,8 +649,14 @@ export function parseStructured(bin: Uint8Array): StructDial {
           : kind === "text" ? `Text ${idx}`
           : kind === "image" ? `Image ${idx}`
           : `Layer ${idx} (unpositioned)`;
+        // Complicação numérica INATIVA colada na borda (ex. bpm @(446,0) em 275/302/325/365/375):
+        // é um slot cujo valor nem cabe antes da borda direita (ou está no canto 0,0) — o firmware
+        // não o mostra na view default. Emitir a camada (roundtrip byte-exato) mas oculta no preview.
+        // Verificado no oráculo: 0 regressões, 6 dials melhoram.
+        const edgePhantom = kind === "text" && mock !== "none" && mock !== "weekday"
+          && (x > 466 - 40 || (x < 2 && y < 2));
         layers.push(mkLayer({
-          kind, name: kname, cf, w, h, assetOff: ptr, assetLen: alen,
+          kind, name: kname, cf, w, h, assetOff: ptr, assetLen: alen, visible: !edgePhantom,
           x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId, color, colorOff, srcOff,
         }));
         idx += 1;
@@ -654,6 +672,11 @@ export function parseStructured(bin: Uint8Array): StructDial {
   // firmware acende UMA célula pelo horário. Não modelamos; emitir "12" em cada célula é pior que
   // nada. Detecta a grade por histograma de tamanho (≥8 grupos idênticos) — assim o relógio de
   // tamanho único de dials mistos (325 Metric) NÃO é suprimido.
+  // NOTA (RE 275): grupos de complicação empilhados na MESMA posição (5 variantes: temp/steps/kcal/
+  // hr…) NÃO marcam no arquivo qual está ativa — é estado de RAM/config do device. Contar por posição
+  // distinta (des-suprimindo pilhas de 2 posições) foi testado no oráculo e REGRIDE 7 dials (+2.0, 0
+  // melhorias), porque a fonte da variante é id de OPÇÃO (não a métrica) → valor errado. Mantido o
+  // conde de nós crus ≥8: suprime tanto matrizes reais (290/357) quanto essas pilhas multi-variante.
   const sizeHist = new Map<string, number>();
   for (const gk of gks) {
     const gr = groups[gk];
@@ -663,7 +686,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
   const gplaced = new Set<string>();
   for (const gk of gks) {
     const gr = groups[gk];
-    if ((sizeHist.get(`${gr[3]}x${gr[4]}`) ?? 0) >= 8) continue; // célula de matriz → não emite
+    if ((sizeHist.get(`${gr[3]}x${gr[4]}`) ?? 0) >= 8) continue; // célula de matriz / pilha multi-variante → não emite
     const kids = digitGroups.get(gk)!;
     if (kids.length === 0) continue;
     const [src0, ptr] = kids[0];

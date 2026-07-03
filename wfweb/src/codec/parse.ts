@@ -703,10 +703,25 @@ export function parseStructured(bin: Uint8Array): StructDial {
         // Verificado no oráculo: 0 regressões, 6 dials melhoram.
         const edgePhantom = kind === "text" && mock !== "none" && mock !== "weekday"
           && (x > 466 - 40 || (x < 2 && y < 2));
+        // Nº de dígitos do img_number: byte XX do sub-record `40 01 00 XX` (após a frame-table).
+        // Firmware (disasm 0x100d8e60): NDIG = XX&0x0F (0⇒7), bit7 = zero-pad. Busca o 1º `40 01 00`
+        // dentro do record a partir da frame-table (i). Editável no inspector ("Digits").
+        let digitCount: number | undefined, digitZeroPad: boolean | undefined, digitCountOff: number | undefined;
+        if (kind === "text") {
+          for (let k = i; k < Math.min(recEnd, i + 60); k++) {
+            if (bin[k] === 0x40 && bin[k + 1] === 0x01 && bin[k + 2] === 0x00) {
+              digitCountOff = k + 3;
+              digitCount = bin[k + 3] & 0x0f;
+              digitZeroPad = (bin[k + 3] & 0x80) !== 0;
+              break;
+            }
+          }
+        }
         layers.push(mkLayer({
           kind, name: kname, cf, w, h, assetOff: ptr, assetLen: alen, visible: !edgePhantom,
           x, y, pivotX: pivx, pivotY: pivy, xOff, yOff, pivxOff, pivyOff, mock, sourceId, color, colorOff, srcOff,
           aod: recAod || undefined, rectW, rectH, rectWOff, rectHOff,
+          digitCount, digitZeroPad, digitCountOff,
         }));
         idx += 1;
       }

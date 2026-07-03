@@ -85,6 +85,12 @@ export interface Layer {
   rectH?: number;
   rectWOff?: number;
   rectHOff?: number;
+  /** Nº de dígitos que o firmware desenha (nibble baixo do byte `40 01 00 XX` do img_number;
+   *  confirmado no disasm `0x100d8e60`: NDIG = XX&0x0F, 0⇒default 7). `digitZeroPad` = bit7 (mostra
+   *  zeros à esquerda, ex. "09"). `digitCountOff` = offset do byte XX p/ reescrever in-place. */
+  digitCount?: number;
+  digitZeroPad?: boolean;
+  digitCountOff?: number;
   /** Chave `assetOff,x,y` do nó-fonte a clonar (bytes comprovados) no rebuild. */
   sourceKey?: string;
 }

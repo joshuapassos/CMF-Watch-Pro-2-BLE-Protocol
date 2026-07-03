@@ -301,8 +301,17 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
     if (hideForMode(l)) continue;
     // Fonte de dígito ÚNICO (tens/units, spec 25 §1.1) → um dígito; senão o valor-mock inteiro.
     const single = l.sourceId !== undefined ? digitForSource(l.sourceId, hh, mm, ss) : null;
-    const s = single ?? mockSample(l.mock, hh, mm, ss);
+    let s = single ?? mockSample(l.mock, hh, mm, ss);
     if (s === null) continue;
+    // img_number: o firmware desenha exatamente `digitCount` dígitos (valor % 10^N), com/sem zero à
+    // esquerda (bit7). Espelha isso no preview p/ a edição de "Digits" refletir o relógio.
+    if (l.digitCount && single === null) {
+      const num = parseInt(s.replace(/[^0-9]/g, ""), 10);
+      if (!Number.isNaN(num)) {
+        const clamped = num % Math.pow(10, l.digitCount);
+        s = l.digitZeroPad ? String(clamped).padStart(l.digitCount, "0") : String(clamped);
+      }
+    }
     const glyphs = atlasGlyphs(dial, l.assetOff, 12);
     if (glyphs.length < 10) continue;
     // cf=13 = máscara A8 (RGB branco, alpha=mask); o firmware pinta com a cor do elemento.

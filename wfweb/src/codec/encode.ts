@@ -26,6 +26,12 @@ export function encodeInPlace(dial: StructDial): Uint8Array {
     // Largura/altura do rect do img_number (distribui os dígitos) — 2 bytes cada, same-footprint.
     if (layer.rectWOff !== undefined && layer.rectW !== undefined) writeU16le(out, layer.rectWOff, layer.rectW);
     if (layer.rectHOff !== undefined && layer.rectH !== undefined) writeU16le(out, layer.rectHOff, layer.rectH);
+    // Nº de dígitos do img_number (byte `40 01 00 XX`): nibble baixo = dígitos, bit7 = zero-pad.
+    // Preserva os bits do meio (0x70) que não interpretamos. Same-footprint (1 byte).
+    if (layer.digitCountOff !== undefined && layer.digitCount !== undefined) {
+      const mid = out[layer.digitCountOff] & 0x70;
+      out[layer.digitCountOff] = mid | (layer.digitCount & 0x0f) | (layer.digitZeroPad ? 0x80 : 0);
+    }
     if (layer.newPayload) {
       const payload = layer.newPayload;
       if (payload.length > layer.assetLen) {

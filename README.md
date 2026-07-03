@@ -767,20 +767,32 @@ all 103 dials **byte-exact** (the X/Y write-offset fix above cleared the last mi
   "Jun 09" and a separate `0x24` temp), so `0x17` is date, not temp. A dial whose watch shows a
   temperature in a `0x17` slot is a user-configured complication (device state), not the file default.
 
-### 11.10 img_number field width (digit spread) — 🟡 experimental
+### 11.10 img_number DIGIT COUNT — the `40 01 00 XX` byte (✅ firmware-confirmed)
 
-Rebinding a 2-digit field (e.g. the date DD) to a source that yields a **3-digit** value (temperature
-`0x24` returns an integer that can be 3 digits, e.g. 366) makes the digits **crowd/overlap** on the
-watch. `img_number` draws only the value's digits (no "."/"°"); the count is value-driven. The
-standalone img_number header (`60 34 00 | 01 2d 00 | [X u16][Y u16][W u16][H u16] … | [src] 00
-[scale] 00`) carries a **picregion width `W` at `i-14`** (relative to the `61 0a 00` frame-table)
-that is **0** for the date/clock fields. The hypothesis (best available; not verifiable off-device —
-no firmware locally, no 3-digit img_number precedent in the corpus): the firmware distributes the N
-digits across `W`, so `W=0` crowds them and setting `W ≈ glyph_w × n_digits` (e.g. 90 for three
-30px glyphs) spreads them. wfweb captures `rectW/rectH` (+offsets) for standalone img_numbers,
-exposes a **"Digits width"** inspector control, writes it **in-place (2 bytes, same-footprint)**, and
-the preview distributes the digits across `W`. Normal-mode render for the 103 corpus dials is
-unchanged (they all have `W=0`); roundtrip stays byte-exact. **Confirm on-device.**
+How many digits an `img_number` draws is a **single byte in the field record** — the data byte `XX`
+of the element's **`40 01 00 XX`** attribute sub-record (the `0x40` sub-record that sits after the
+`61 [count][base][glyph-ids]` frame table):
+
+- **low nibble `XX & 0x0F` = number of digit slots** (`0` ⇒ firmware default 7).
+- **bit 7 `0x80` = zero-pad** (show leading zeros, e.g. "09" vs "9").
+
+Confirmed by disassembling the firmware (XIP image `0x10000000`; render routine **`0x100d8e60`**):
+`NDIG = ldrb[40sub+3] & 0x0F` (→7 if 0); the value is clamped `value % 10^NDIG` and exactly `NDIG`
+glyphs are drawn MS-first, leading zeros suppressed unless bit7. The `u16` after the source (60 for
+date, 1000 for kcal) is **NOT** the count — it only feeds the thousands/millions separator-glyph
+insertion (`cmp #1000/#1000000`), which is why editing it did nothing. Source id doesn't cap either.
+
+Corpus histogram over all 620 number fields matches: 2-digit fields (hour/min/sec/date/temp/HR) end
+`40 01 00 02`/`0x82`; kcal `…04`; steps `…05`; single-digit clock splits `0x81`. So the **date field
+`40 01 00 82` = 2 digits, zero-padded** — that's the entire reason a rebound Fahrenheit temperature
+(≥100) was truncated.
+
+**Fix / editor:** wfweb parses `digitCount`/`digitZeroPad` (+`digitCountOff`) for number fields,
+exposes **"Digits"** + **"Zero-pad"** in the inspector, writes the byte **in-place (same-footprint)**,
+and the preview clamps/pads to `digitCount` to mirror the firmware. So rebinding a field's source and
+setting its digit count works for **any** field (e.g. date→temperature °F → Digits 3). Normal-mode
+oracle unchanged (0 regressions, 3 tiny improvements); roundtrip byte-exact on all 103 dials.
+(The earlier "Digits width"/`rectW` hypothesis was wrong — width is layout only, not the count.)
 
 ---
 

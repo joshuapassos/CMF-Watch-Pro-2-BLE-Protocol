@@ -356,7 +356,8 @@ export class App {
       ${isDataBound ? `<div class="field"><label>Source${persistNote}</label><select id="fSrc"></select></div>` : ""}
       ${hasColor ? `<div class="field"><label>Color${l.colorOff === undefined ? " (preview only)" : ""}</label><input type="color" id="fColor" value="${hex}"></div>` : ""}
       ${isArc ? `<div class="field"><label>Max (ring)</label><input type="number" id="fMax" value="${l.arcMax ?? 100}"></div>` : ""}
-      ${l.rectWOff !== undefined ? `<div class="field"><label title="Rect width the firmware spreads the digits across. 0 = auto (crowds &gt;2 digits). Set ~glyph_w × n_digits (e.g. 90 for 3).">Digits width</label><input type="number" id="fRectW" value="${l.rectW ?? 0}" min="0" max="466"></div>` : ""}
+      ${l.digitCountOff !== undefined ? `<div class="field"><label title="How many digit slots the firmware draws (byte 40 01 00 XX, low nibble). e.g. 2 for date/temp°C, 3 for temp°F, 5 for steps.">Digits</label><input type="number" id="fDigits" value="${l.digitCount || 7}" min="1" max="9"></div>` : ""}
+      ${l.digitCountOff !== undefined ? `<div class="field"><label title="Show leading zeros (e.g. 09 vs 9) — bit 7 of the digit-count byte.">Zero-pad</label><input type="checkbox" id="fZeroPad" ${l.digitZeroPad ? "checked" : ""}></div>` : ""}
       ${l.frames && l.frames > 1 && !isArc ? `<div class="field"><label>Frame</label><input type="range" id="fFrame" min="0" max="${l.frames - 1}" value="${l.previewFrame ?? 0}"><span id="fFrameV">${l.previewFrame ?? "auto"}</span></div>` : ""}
       <div class="field"><label>Data (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visible</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
@@ -411,7 +412,11 @@ export class App {
     bindNum("fPX", (v) => (l.pivotX = v));
     bindNum("fPY", (v) => (l.pivotY = v));
     if (isArc) bindNum("fMax", (v) => (l.arcMax = v || 100));
-    if (l.rectWOff !== undefined) bindNum("fRectW", (v) => (l.rectW = Math.max(0, Math.min(466, v))));
+    if (l.digitCountOff !== undefined) {
+      bindNum("fDigits", (v) => (l.digitCount = Math.max(1, Math.min(9, v))));
+      const zp = document.getElementById("fZeroPad") as HTMLInputElement | null;
+      zp?.addEventListener("change", () => { this.pushUndo(); l.digitZeroPad = zp.checked; this.render(); this.refreshJson(); });
+    }
 
     const frameSl = document.getElementById("fFrame") as HTMLInputElement | null;
     if (frameSl) {

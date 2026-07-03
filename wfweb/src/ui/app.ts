@@ -354,6 +354,7 @@ export class App {
       <div class="field"><label>Pivot X</label><input type="number" id="fPX" value="${l.pivotX}" ${pivotable ? "" : "disabled"}></div>
       <div class="field"><label>Pivot Y</label><input type="number" id="fPY" value="${l.pivotY}" ${pivotable ? "" : "disabled"}></div>
       ${isDataBound ? `<div class="field"><label>Source${persistNote}</label><select id="fSrc"></select></div>` : ""}
+      ${isDataBound && l.srcOff !== undefined ? `<div class="field"><label title="Bind to ANY firmware getter id (0x00–0x8d), even ones not in the list — for sweeping/finding the right data channel.">Source id (raw)</label><input type="number" id="fSrcRaw" value="${l.sourceId ?? 0}" min="0" max="141"></div>` : ""}
       ${hasColor ? `<div class="field"><label>Color${l.colorOff === undefined ? " (preview only)" : ""}</label><input type="color" id="fColor" value="${hex}"></div>` : ""}
       ${isArc ? `<div class="field"><label>Max (ring)</label><input type="number" id="fMax" value="${l.arcMax ?? 100}"></div>` : ""}
       ${l.digitCountOff !== undefined ? `<div class="field"><label title="How many digit slots the firmware draws (byte 40 01 00 XX, low nibble). e.g. 2 for date/temp°C, 3 for temp°F, 5 for steps.">Digits</label><input type="number" id="fDigits" value="${l.digitCount || 7}" min="1" max="9"></div>` : ""}
@@ -391,6 +392,19 @@ export class App {
       srcSel.addEventListener("change", () => {
         this.pushUndo();
         const id = parseInt(srcSel.value, 10);
+        l.sourceId = id;
+        l.mock = mockFromSourceId(id);
+        mockSel.value = l.mock;
+        const raw = document.getElementById("fSrcRaw") as HTMLInputElement | null;
+        if (raw) raw.value = String(id);
+        this.render();
+        this.refreshJson();
+      });
+      // Bind to ANY getter id (sweep/unknown channels) — persisted via srcOff.
+      const rawSel = document.getElementById("fSrcRaw") as HTMLInputElement | null;
+      rawSel?.addEventListener("input", () => {
+        this.pushUndoDebounced();
+        const id = Math.max(0, Math.min(0x8d, parseInt(rawSel.value || "0", 10) | 0));
         l.sourceId = id;
         l.mock = mockFromSourceId(id);
         mockSel.value = l.mock;

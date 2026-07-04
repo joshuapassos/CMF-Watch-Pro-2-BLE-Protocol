@@ -3,7 +3,6 @@ import "./styles.css";
 import { parseStructured, setAod } from "../codec/parse.js";
 import { renderAt, decodeLayer, type JpegCache } from "../codec/render.js";
 import { encodeInPlace, setLayerImageRaster, isPhotoDial, buildPhotoDial, FULL_DIM, THUMB_DIM } from "../codec/encode.js";
-import { rebuildContainer, rebuildSameFootprint, validateContainer } from "../codec/scene.js";
 import { buildNotation, applyNotation } from "../codec/notation.js";
 import { MOCK_ALL, mockLabel, DATA_SOURCES, mockFromSourceId, pointerRole } from "../codec/mock.js";
 import { simEnv } from "../codec/mock.js";
@@ -47,7 +46,6 @@ export class App {
     $<HTMLInputElement>("openPhoto").addEventListener("change", (e) => this.onNewPhoto(e));
     $("btnExport").addEventListener("click", () => this.onExport());
     $("btnPlay").addEventListener("click", () => this.togglePlay());
-    $("btnAddLayer").addEventListener("click", () => this.addLayer());
     $("btnApplyJson").addEventListener("click", () => this.onApplyJson());
     $("segNormal").addEventListener("click", () => this.onAod(false));
     $("segAod").addEventListener("click", () => this.onAod(true));
@@ -142,7 +140,7 @@ export class App {
   }
 
   private enableUi(on: boolean): void {
-    for (const id of ["btnExport", "btnPlay", "btnApplyJson", "btnAddLayer"]) ($(id) as HTMLButtonElement).disabled = !on;
+    for (const id of ["btnExport", "btnPlay", "btnApplyJson"]) ($(id) as HTMLButtonElement).disabled = !on;
     // AOD editing is available only when the dial actually has an always-on variant.
     const hasAod = !!on && (!!this.dial?.aod || (this.dial?.layers.some((l) => l.aod) ?? false));
     ($("segAod") as HTMLButtonElement).disabled = !hasAod;
@@ -265,44 +263,6 @@ export class App {
     this.buildSimPanel();
     this.refreshJson();
     this.render();
-    this.updateSizeMeter();
-  }
-
-  /** Tamanho atual (serializado) vs orçamento (tamanho original) — o relógio só ativa dial do MESMO
-   *  tamanho. `current` = conteúdo real; edições in-place mantêm == budget; estruturais recompactam. */
-  private sizeInfo(): { current: number; budget: number; over: boolean } | null {
-    if (!this.dial) return null;
-    const budget = this.dial.raw.length;
-    const structural = this.dial.layers.some((l) => l.deleted || l.isClone);
-    // Sem edição estrutural o pool é mantido verbatim → o arquivo já ocupa 100% do orçamento (não há
-    // folga reaproveitável; p/ adicionar é preciso deletar/erase antes). current == budget.
-    if (!structural) return { current: budget, budget, over: false };
-    try {
-      const inPlace = encodeInPlace(this.dial);
-      const r = rebuildSameFootprint({ ...this.dial, raw: inPlace });
-      return { current: r.contentSize, budget: r.budget, over: r.contentSize > r.budget };
-    } catch {
-      return { current: budget, budget, over: false };
-    }
-  }
-
-  private updateSizeMeter(): void {
-    const meter = document.getElementById("sizeMeter");
-    const fill = document.getElementById("sizeMeterFill");
-    const text = document.getElementById("sizeMeterText");
-    if (!meter || !fill || !text) return;
-    const info = this.sizeInfo();
-    if (!info) { meter.hidden = true; return; }
-    meter.hidden = false;
-    const pct = Math.min(100, Math.round((info.current / info.budget) * 100));
-    fill.style.width = `${pct}%`;
-    meter.classList.toggle("over", info.over);
-    const kb = (n: number) => (n / 1024).toFixed(1);
-    const amt = (n: number) => (n < 1024 ? `${n} B` : `${kb(n)} KB`); // bytes p/ folga pequena
-    const head = info.budget - info.current;
-    text.textContent = info.over
-      ? `${kb(info.current)} / ${kb(info.budget)} KB — ${amt(info.current - info.budget)} acima do limite (não ativa)`
-      : `${kb(info.current)} / ${kb(info.budget)} KB — ${amt(head)} livres (mesmo tamanho ativa)`;
   }
 
   /** Painel de VALORES DE PREVIEW (estilo editor Mi Band): setar hora + dados p/ ver dígitos,
@@ -722,46 +682,6 @@ export class App {
     input.click();
   }
 
-  // ---- Criar layer nova (clone de um elemento existente = bytes provados) ----
-  /** Cria uma camada nova clonando um elemento existente (o usuário depois re-skina/move/religa).
-   *  Reusa o mesmo mecanismo do Duplicate (bytes provados). O arquivo cresce → precisa caber no
-   *  orçamento (mesmo tamanho ativa); se estourar, avisa p/ liberar espaço (delete/erase). */
-  private addLayer(): void {
-    const d = this.dial;
-    if (!d) return;
-    const cloneable = (l: Layer) =>
-      (l.kind === "image" || l.kind === "text" || l.kind === "pointer") && !l.deleted && l.assetOff > 0;
-    let tpl = this.selected >= 0 ? d.layers[this.selected] : undefined;
-    if (!tpl || !cloneable(tpl)) tpl = d.layers.find(cloneable);
-    if (!tpl) {
-      this.status("Nenhum elemento clonável p/ criar uma layer (abra um dial com imagens/elementos).", "err");
-      return;
-    }
-    this.pushUndo();
-    const clone: Layer = {
-      ...tpl,
-      x: Math.min(465, tpl.x + 12), y: Math.min(465, tpl.y + 12), isClone: true,
-      name: `New ${tpl.kind} ${d.layers.length}`,
-      sourceKey: `${tpl.assetOff},${tpl.x},${tpl.y}`,
-      xOff: undefined, yOff: undefined, pivxOff: undefined, pivyOff: undefined, colorOff: undefined, srcOff: undefined,
-      newPayload: undefined, newFramePayloads: undefined,
-    };
-    const at = this.selected >= 0 ? this.selected + 1 : d.layers.length;
-    d.layers.splice(at, 0, clone);
-    this.selected = at;
-    this.refreshAll();
-    const info = this.sizeInfo();
-    if (info?.over) {
-      this.status(
-        `Layer criada — mas o arquivo passou ${((info.current - info.budget) / 1024).toFixed(1)} KB do tamanho ` +
-          `original. Delete/erase algo p/ caber, senão o relógio NÃO ativa (a065).`,
-        "err",
-      );
-    } else {
-      this.status(`Layer criada (clone de "${tpl.name}"). Re-skine/mova/religue a fonte no inspector.`, "ok");
-    }
-  }
-
   // ---- AOD ----
   private aodMode = false;
   private onAod(on: boolean): void {
@@ -872,13 +792,17 @@ export class App {
   /** Serializa o dial editado em bytes (mesmo caminho do export; exposto p/ automação/testes). */
   encodeBytes(): Uint8Array {
     if (!this.dial) throw new Error("nenhum dial aberto");
+    // Edição ESTRUTURAL (delete/add/duplicate) foi COMPROVADA como não-instalável no relógio: mesmo
+    // com o tamanho idêntico, o firmware rejeita o layout reconstruído (cai no dial original) e pode
+    // até bagunçar a lista de dials. Só edições IN-PLACE (mover/cor/imagem-no-slot/fonte/dígitos)
+    // ativam. Recusamos o export estrutural p/ não gerar arquivo que corrompe o relógio.
     const structural = this.dial.layers.some((l) => l.deleted || l.isClone);
     if (structural) {
-      // REBUILD: camadas removidas mudam o footprint → reconstrói cena+pool e reajusta ponteiros.
-      const inPlace = encodeInPlace(this.dial); // aplica geometria/cor/fonte primeiro
-      const bytes = rebuildContainer({ ...this.dial, raw: inPlace });
-      validateContainer(bytes); // invariante do firmware (1º byte 0x20, lengths fecham)
-      return bytes;
+      throw new Error(
+        "Delete/Add/Duplicate não instalam neste relógio (o firmware rejeita o layout reconstruído e " +
+          "pode afetar a lista de dials). Desfaça (Ctrl+Z) e use só edições in-place: mover, cor, trocar " +
+          "imagem no mesmo slot, religar fonte, dígitos.",
+      );
     }
     return encodeInPlace(this.dial);
   }

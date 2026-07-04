@@ -122,11 +122,9 @@ export class App {
 
   /** Catálogo de templates (bases boas p/ re-skin in-place), servidos de /templates. */
   private static readonly TEMPLATES: Array<{ id: string; name: string; style: string }> = [
-    { id: "290", name: "Gradual", style: "Fundo / foto — maior canvas re-skinável" },
-    { id: "309", name: "Gradient", style: "Analógico + fundo custom" },
-    { id: "353", name: "Dual-phase", style: "Analógico clássico (números 1–12)" },
-    { id: "275", name: "SlopeTime", style: "Rico em dados (temp/passos/kcal)" },
-    { id: "376", name: "Digits time", style: "Digital grande" },
+    { id: "290", name: "Aurora", style: "Fundo em gradiente — troque por foto/arte" },
+    { id: "309", name: "Analog", style: "Analógico limpo (ponteiros + gradiente)" },
+    { id: "275", name: "Data", style: "Analógico + complicações (temp/passos)" },
   ];
 
   private openTemplateGallery(): void {

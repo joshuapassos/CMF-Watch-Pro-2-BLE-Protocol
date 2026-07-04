@@ -1,6 +1,6 @@
 // App do editor — estado central + wiring dos painéis (camadas, inspector, notação, assets, canvas).
 import "./styles.css";
-import { parseStructured, setAod } from "../codec/parse.js";
+import { parseStructured, setAod, scanAssets } from "../codec/parse.js";
 import { renderAt, decodeLayer, type JpegCache } from "../codec/render.js";
 import { encodeInPlace, setLayerImageRaster, isPhotoDial, buildPhotoDial, FULL_DIM, THUMB_DIM } from "../codec/encode.js";
 import { rebuildContainer, rebuildSameFootprint, validateContainer } from "../codec/scene.js";
@@ -274,7 +274,14 @@ export class App {
     if (!this.dial) return null;
     const budget = this.dial.raw.length;
     const structural = this.dial.layers.some((l) => l.deleted || l.isClone);
-    if (!structural) return { current: budget, budget, over: false }; // in-place nunca cresce
+    if (!structural) {
+      // conteúdo REAL (sem padding) = firstAsset + Σ(8+len). Mostra a folga já existente no arquivo.
+      const assets = scanAssets(this.dial.raw);
+      if (assets.length === 0) return { current: budget, budget, over: false };
+      const firstAsset = assets.reduce((m, a) => Math.min(m, a[0]), this.dial.raw.length);
+      const content = firstAsset + assets.reduce((s, a) => s + 8 + a[4], 0);
+      return { current: content, budget, over: content > budget };
+    }
     try {
       const inPlace = encodeInPlace(this.dial);
       const r = rebuildSameFootprint({ ...this.dial, raw: inPlace });
@@ -296,10 +303,11 @@ export class App {
     fill.style.width = `${pct}%`;
     meter.classList.toggle("over", info.over);
     const kb = (n: number) => (n / 1024).toFixed(1);
+    const amt = (n: number) => (n < 1024 ? `${n} B` : `${kb(n)} KB`); // bytes p/ folga pequena
     const head = info.budget - info.current;
     text.textContent = info.over
-      ? `${kb(info.current)} / ${kb(info.budget)} KB — ${kb(info.current - info.budget)} KB acima do limite (não ativa)`
-      : `${kb(info.current)} / ${kb(info.budget)} KB — ${kb(head)} KB livres (mesmo tamanho ativa)`;
+      ? `${kb(info.current)} / ${kb(info.budget)} KB — ${amt(info.current - info.budget)} acima do limite (não ativa)`
+      : `${kb(info.current)} / ${kb(info.budget)} KB — ${amt(head)} livres (mesmo tamanho ativa)`;
   }
 
   /** Painel de VALORES DE PREVIEW (estilo editor Mi Band): setar hora + dados p/ ver dígitos,

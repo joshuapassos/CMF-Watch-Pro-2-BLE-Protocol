@@ -136,8 +136,8 @@ export interface SceneDrawable {
   arc?: { max: number; color?: [number, number, number]; width?: number; colorOff?: number };
   /** Drawable do container ALWAYS-ON (0x22): variante AOD, oculta no preview normal. */
   aod?: boolean;
-  /** Animação AUTOPLAY (picregion cf=1/JPEG): frames ciclam em loop no relógio. */
-  animation?: boolean;
+  /** Multi-frame (picregion cf=1) com assets por-frame editáveis (frame escolhido por tempo/dado). */
+  multiFrame?: boolean;
   /** Offsets/lens absolutos de cada frame (walk consecutivo a partir de base). */
   frameOffsets?: number[];
   frameLens?: number[];
@@ -270,7 +270,7 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
             if (fr) {
               d.frameOffsets = fr.offsets;
               d.frameLens = fr.lens;
-              if (fr.cf0 === 1) d.animation = true;
+              if (fr.cf0 === 1) d.multiFrame = true;
             }
           }
           // fonte de dado da COMPLICAÇÃO: attr-block `82` após o último `40 01 00` do corpo,
@@ -475,9 +475,10 @@ export function parseStructured(bin: Uint8Array): StructDial {
   const bgFrameSet = new Set<number>(bgFrames.map(([o]) => o));
   if (aod) bgFrameSet.add(aod[0]);
   // PICARRAY (modelo 281): N drawables count=1 na MESMA (x,y), cada um apontando p/ um asset cf=1
-  // (JPEG) distinto = animação AUTOPLAY (SDK anim_img_set_src_picarray). O dedup normal colapsaria
-  // esses irmãos num frame estático; aqui os agrupamos numa ÚNICA camada de animação.
-  const animGroups = new Map<SceneDrawable, { offsets: number[]; lens: number[] }>();
+  // (JPEG) distinto = elemento MULTI-FRAME (frame escolhido por tempo/dado; NÃO é autoplay — o .bin
+  // custom não faz autoplay). O dedup normal colapsaria os irmãos num frame; aqui os agrupamos numa
+  // ÚNICA camada multi-frame p/ permitir re-skin frame a frame + scrubber no preview.
+  const frameGroups = new Map<SceneDrawable, { offsets: number[]; lens: number[] }>();
   const consumed = new Set<SceneDrawable>();
   for (let gi = 0; gi < sceneDrawables.length; gi++) {
     const g0 = sceneDrawables[gi];
@@ -493,7 +494,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
       run.push(gn);
     }
     if (run.length >= 4) {
-      animGroups.set(g0, {
+      frameGroups.set(g0, {
         offsets: run.map((r) => r.assetOff),
         lens: run.map((r) => assetMap.get(r.assetOff)![3]),
       });
@@ -503,21 +504,21 @@ export function parseStructured(bin: Uint8Array): StructDial {
   let idx = 0;
   if (sceneMode) {
     for (const d of sceneDrawables) {
-      // PICARRAY: frame não-líder de um grupo de animação — já representado pela camada do líder.
-      if (consumed.has(d) && !animGroups.has(d)) continue;
-      const animGrp = animGroups.get(d);
-      if (animGrp) {
+      // PICARRAY: frame não-líder de um grupo multi-frame — já representado pela camada do líder.
+      if (consumed.has(d) && !frameGroups.has(d)) continue;
+      const frameGrp = frameGroups.get(d);
+      if (frameGrp) {
         const a = assetMap.get(d.assetOff);
         if (a) {
-          const key = `anim,${d.x},${d.y},${d.aod ? "a" : "n"}`;
+          const key = `frames,${d.x},${d.y},${d.aod ? "a" : "n"}`;
           if (!placed.has(key)) {
             placed.add(key);
             layers.push(mkLayer({
-              kind: "image", name: `Animation ${idx}`,
+              kind: "image", name: `Frames ${idx}`,
               cf: a[0], w: a[1], h: a[2], assetOff: d.assetOff, assetLen: a[3],
               x: d.x, y: d.y, xOff: d.xOff, yOff: d.yOff,
-              mock: "none", frames: animGrp.offsets.length, animation: true,
-              frameOffsets: animGrp.offsets, frameLens: animGrp.lens,
+              mock: "none", frames: frameGrp.offsets.length, multiFrame: true,
+              frameOffsets: frameGrp.offsets, frameLens: frameGrp.lens,
               aod: d.aod || undefined,
             }));
             idx += 1;
@@ -570,21 +571,21 @@ export function parseStructured(bin: Uint8Array): StructDial {
         }
         continue;
       }
-      // ANIMAÇÃO AUTOPLAY (picregion cf=1): frames JPEG ciclam em loop no relógio, independente de
-      // dado. Emite como imagem animada (NÃO cai na heurística flip-clock/hora abaixo).
-      if (d.animation && d.frameOffsets && d.frameLens) {
+      // MULTI-FRAME (picregion cf=1): frames JPEG com assets por-frame editáveis. O relógio escolhe o
+      // frame por tempo/dado (NÃO é autoplay). Emite como camada multi-frame (fora da heurística hora).
+      if (d.multiFrame && d.frameOffsets && d.frameLens) {
         if (bgFrameSet.has(d.assetOff)) continue;
         const key = `${d.tag},${d.x},${d.y},${w},${h},${d.aod ? "a" : "n"}`;
         if (placed.has(key)) continue;
         placed.add(key);
         layers.push(mkLayer({
-          kind: "image", name: `Animation ${idx}`,
+          kind: "image", name: `Frames ${idx}`,
           cf, w, h, assetOff: d.assetOff, assetLen: alen,
           x: d.x, y: d.y,
           xOff: d.xOff, yOff: d.yOff,
           mock: "none",
           frames: d.frameCount,
-          animation: true,
+          multiFrame: true,
           frameOffsets: d.frameOffsets,
           frameLens: d.frameLens,
           aod: d.aod || undefined,

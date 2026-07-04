@@ -73,15 +73,16 @@ export interface Layer {
   arcWidth?: number;
   /** Override de frame p/ preview (scrubber do editor); undefined = frame vem do valor mock. */
   previewFrame?: number;
-  /** Animação AUTOPLAY (picregion cf=1/JPEG): o relógio cicla os frames em loop (~64 ms/frame),
-   *  independente de dado. Distingue de flip-clock/complicação (frame vem de valor). */
-  animation?: boolean;
-  /** Offsets absolutos (dimsWord) de CADA frame no `raw`, calculados por base+Σstrides da frame-table.
-   *  Alinhado a `frameLens`. Só p/ layers com >1 frame (esp. animação). */
+  /** Elemento MULTI-FRAME com assets por-frame editáveis (picregion ou picarray de irmãos). O relógio
+   *  escolhe o frame por TEMPO/DADO (hora/min/etc.) — NÃO é autoplay livre (o `.bin` custom não suporta
+   *  autoplay; isso é firmware-only via jx_pic_anim). Usado p/ re-skin frame a frame + scrubber no preview. */
+  multiFrame?: boolean;
+  /** Offsets absolutos (dimsWord) de CADA frame no `raw` (walk consecutivo / bases dos irmãos).
+   *  Alinhado a `frameLens`. */
   frameOffsets?: number[];
   /** `len` do payload de cada frame (orçamento same-footprint por frame). Alinhado a `frameOffsets`. */
   frameLens?: number[];
-  /** Payloads novos por frame (re-skin de animação); aplicados no `encodeInPlace` em cada frameOffset.
+  /** Payloads novos por frame (re-skin); aplicados no `encodeInPlace` em cada frameOffset.
    *  Alinhado a `frameOffsets`; entradas null = frame inalterado. */
   newFramePayloads?: (Uint8Array | null)[];
   /** Marcada p/ remoção — some do preview e é omitida no export (rebuild do container). */

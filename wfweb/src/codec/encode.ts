@@ -32,7 +32,7 @@ export function encodeInPlace(dial: StructDial): Uint8Array {
       const mid = out[layer.digitCountOff] & 0x70;
       out[layer.digitCountOff] = mid | (layer.digitCount & 0x0f) | (layer.digitZeroPad ? 0x80 : 0);
     }
-    // Re-skin de ANIMAÇÃO: grava cada frame novo em seu próprio offset (same-footprint por frame).
+    // Re-skin MULTI-FRAME: grava cada frame novo em seu próprio offset (same-footprint por frame).
     // A frame-table (strides) NÃO é tocada → offsets/strides seguem válidos, arquivo não cresce.
     if (layer.newFramePayloads && layer.frameOffsets && layer.frameLens) {
       for (let f = 0; f < layer.frameOffsets.length; f++) {

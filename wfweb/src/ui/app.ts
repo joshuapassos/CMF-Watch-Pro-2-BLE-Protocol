@@ -134,7 +134,7 @@ export class App {
       card.className = "tpl-card";
       card.type = "button";
       card.innerHTML =
-        `<img src="/templates/${t.id}.png" alt="${t.name}" loading="lazy">` +
+        `<img src="${import.meta.env.BASE_URL}templates/${t.id}.png" alt="${t.name}" loading="lazy">` +
         `<div class="tpl-name">${t.name}</div><div class="tpl-style">${t.style}</div>`;
       card.addEventListener("click", () => { this.closeTemplateGallery(); void this.loadTemplate(t); });
       grid.appendChild(card);
@@ -148,7 +148,7 @@ export class App {
 
   private async loadTemplate(t: { id: string; name: string }): Promise<void> {
     try {
-      const resp = await fetch(`/templates/${t.id}.bin`);
+      const resp = await fetch(`${import.meta.env.BASE_URL}templates/${t.id}.bin`);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const bytes = new Uint8Array(await resp.arrayBuffer());
       await this.loadDialBytes(bytes, `${t.name} (template)`);

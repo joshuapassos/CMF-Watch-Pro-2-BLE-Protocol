@@ -162,28 +162,41 @@ export function buildContainerRaw(
   return out;
 }
 
+/** Resultado de um rebuild same-footprint (p/ o indicador de tamanho decidir se ativa). */
+export interface RebuildResult {
+  /** Bytes do `.bin` reconstruído (padded pro tamanho original); null se estourou o orçamento. */
+  bytes: Uint8Array | null;
+  /** Tamanho do CONTEÚDO real (sem padding) = 0x24 + cena + pool compactado. */
+  contentSize: number;
+  /** Orçamento = tamanho original do arquivo. contentSize ≤ budget ⇒ ativa (mesmo footprint). */
+  budget: number;
+}
+
 /**
- * REBUILD do `.bin` OMITINDO camadas marcadas `deleted` (delete real, muda o footprint).
- * Como os ponteiros de asset na cena são offsets ABSOLUTOS, remover um nó encurta a cena e
- * desloca o pool — então TODO ponteiro é reajustado por um delta uniforme (`novoFirstAsset −
- * firstAsset`). O pool inteiro é mantido (assets órfãos do nó removido são inofensivos: `len`
- * limita a leitura e nenhum record aponta pra eles). Detecção de ponteiro: `u32` que casa EXATO
- * com um offset de asset conhecido (offsets são ≥ firstAsset, grandes; coords são pequenas).
- * Retorna o novo `.bin` (validado por validateContainer no caller).
+ * REBUILD "same-footprint estrutural": aplica delete/clone/add e reconstrói o `.bin` mantendo o
+ * tamanho EXATO do original (o relógio só ativa dial do mesmo tamanho; crescer ⇒ a065=0x0a).
+ *
+ * Como fecha o footprint: (1) remove os nós `deleted` da cena; (2) insere clones (bytes provados do
+ * nó-fonte, X/Y patchados); (3) COMPACTA o pool descartando só os assets dos elementos deletados que
+ * ninguém mais referencia (libera espaço p/ as adições); (4) re-serializa a cena e reescreve CADA
+ * ponteiro de asset (mapa old→new, pois o pool foi re-layoutado — não é mais delta uniforme);
+ * (5) se o conteúdo ≤ original, faz PAD com zeros na cauda do pool até bater o tamanho original
+ * (padding não-referenciado é ignorado pelo fw, igual a asset órfão). Se conteúdo > original, LANÇA
+ * (estourou o orçamento). Detecção de ponteiro: `u32` na CENA que casa exato com um offset de asset.
  */
-export function rebuildContainer(dial: StructDial): Uint8Array {
+export function rebuildSameFootprint(dial: StructDial): RebuildResult {
   const raw = dial.raw;
+  const budget = raw.length;
   const perDialId = raw.length >= 4 ? u32le(raw, 0) : 0;
   const idWord0 = raw.length >= 0x24 ? u32le(raw, 0x20) : 0;
   const assets = scanAssets(raw);
-  if (assets.length === 0 || raw[0x24] !== 0x20) return raw.slice(); // sem cena → nada a fazer
+  if (assets.length === 0 || raw[0x24] !== 0x20) return { bytes: raw.slice(), contentSize: budget, budget };
   const firstAsset = assets.reduce((m, a) => Math.min(m, a[0]), raw.length);
   const oldOffs = new Set<number>(assets.map((a) => a[0]));
 
-  // chave (assetOff,x,y) das camadas marcadas p/ deletar.
   const del = new Set(dial.layers.filter((l) => l.deleted && !l.isClone).map((l) => `${l.assetOff},${l.x},${l.y}`));
   const clones = dial.layers.filter((l) => l.isClone && !l.deleted);
-  if (del.size === 0 && clones.length === 0) return raw.slice();
+  if (del.size === 0 && clones.length === 0) return { bytes: raw.slice(), contentSize: budget, budget };
 
   // chave de um nó-folha drawable: base da frame-table + X/Y do corpo.
   const leafKey = (n: SceneNode): string | null => {
@@ -211,9 +224,7 @@ export function rebuildContainer(dial: StructDial): Uint8Array {
 
   const roots = prune(parseScene(raw, 0x24, firstAsset));
 
-  // INSERE clones: acha o nó-fonte (por sourceKey = assetOff,x,y do original), clona os bytes,
-  // patcha X/Y (corpo+3/+5) p/ a nova posição e insere após a fonte no mesmo pai. O ponteiro do
-  // clone = o mesmo asset da fonte (offset válido) → é reajustado pelo delta como os demais.
+  // INSERE clones (mesma lógica do Duplicate): copia os bytes do nó-fonte, patcha X/Y.
   const insertClone = (nodes: SceneNode[], srcKey: string, nx: number, ny: number): boolean => {
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
@@ -233,19 +244,61 @@ export function rebuildContainer(dial: StructDial): Uint8Array {
   };
   for (const cl of clones) if (cl.sourceKey) insertClone(roots, cl.sourceKey, cl.x, cl.y);
 
+  // cena serializada (ponteiros ainda com offsets ANTIGOS).
   const parts = roots.map(serializeScene);
   const newScene = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
   { let o = 0; for (const p of parts) { newScene.set(p, o); o += p.length; } }
 
-  // reajusta os ponteiros absolutos pelo delta (cena encolheu → pool moveu).
-  const delta = (0x24 + newScene.length) - firstAsset;
-  if (delta !== 0) {
-    for (let i = 0; i + 4 <= newScene.length; i++) {
-      const v = u32le(newScene, i);
-      if (oldOffs.has(v)) { writeU32le(newScene, i, v + delta); i += 3; }
-    }
+  // offsets que a cena sobrevivente AINDA aponta (varredura u32 == offset de asset).
+  const survivingPtrs = new Set<number>();
+  for (let i = 0; i + 4 <= newScene.length; i++) {
+    const v = u32le(newScene, i);
+    if (oldOffs.has(v)) survivingPtrs.add(v);
   }
-  return buildContainerRaw(perDialId, dial.name, idWord0, newScene, raw.slice(firstAsset));
+
+  // assets a DESCARTAR: só os dos elementos deletados que ninguém mais referencia (inclui os frames
+  // de um elemento multi-frame deletado). Tudo o mais (inclusive assets não-mapeados) é mantido.
+  const dropOffs = new Set<number>();
+  for (const l of dial.layers) {
+    if (!l.deleted || l.isClone) continue;
+    const offs = l.frameOffsets && l.frameOffsets.length ? l.frameOffsets : [l.assetOff];
+    for (const o of offs) if (oldOffs.has(o) && !survivingPtrs.has(o)) dropOffs.add(o);
+  }
+
+  // novo pool na ORDEM original, sem os descartados; mapa old→new offset.
+  const kept = assets.filter((a) => !dropOffs.has(a[0])).sort((a, b) => a[0] - b[0]);
+  const newFirst = 0x24 + newScene.length;
+  const oldToNew = new Map<number, number>();
+  let cursor = newFirst;
+  let poolLen = 0;
+  for (const [off, , , , len] of kept) { oldToNew.set(off, cursor); cursor += 8 + len; poolLen += 8 + len; }
+
+  // reescreve os ponteiros da cena old→new (pool re-layoutado).
+  for (let i = 0; i + 4 <= newScene.length; i++) {
+    const v = u32le(newScene, i);
+    const nv = oldToNew.get(v);
+    if (nv !== undefined) { writeU32le(newScene, i, nv); i += 3; }
+  }
+
+  const contentSize = newFirst + poolLen;
+  if (contentSize > budget) return { bytes: null, contentSize, budget }; // estourou o orçamento
+  // monta o pool (assets mantidos, verbatim) + PAD com zeros até o tamanho original.
+  const pool = new Uint8Array(budget - newFirst);
+  { let o = 0; for (const [off, , , , len] of kept) { pool.set(raw.subarray(off, off + 8 + len), o); o += 8 + len; } }
+  const bytes = buildContainerRaw(perDialId, dial.name, idWord0, newScene, pool);
+  return { bytes, contentSize, budget };
+}
+
+/** Compat: retorna só os bytes; lança se a estrutura estourou o orçamento (tamanho original). */
+export function rebuildContainer(dial: StructDial): Uint8Array {
+  const r = rebuildSameFootprint(dial);
+  if (!r.bytes) {
+    throw new Error(
+      `estrutura excede o orçamento: ${r.contentSize} B > ${r.budget} B — delete/erase algo p/ liberar ` +
+        `${r.contentSize - r.budget} B (o relógio só ativa dial do mesmo tamanho).`,
+    );
+  }
+  return r.bytes;
 }
 
 /** Monta um dial estruturado DO ZERO: header + envelope-cena + pool. */

@@ -54,6 +54,15 @@ body {
 .btn:hover:not(:disabled) { border-color: var(--accent); }
 .btn:disabled { opacity: 0.4; cursor: default; }
 .btn.wide { width: 100%; margin-top: 6px; }
+
+/* Medidor de tamanho (orçamento same-footprint). */
+.sizemeter { margin: 4px 0 8px; }
+.sizemeter-bar { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; border: 1px solid var(--line); }
+.sizemeter-fill { height: 100%; width: 0%; background: var(--ok); transition: width 0.12s, background 0.12s; }
+.sizemeter.over .sizemeter-fill { background: var(--err); }
+.sizemeter-text { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.sizemeter.over .sizemeter-text { color: var(--err); }
+.field.note { font-size: 11px; color: var(--muted); background: var(--panel2); border-radius: 4px; padding: 5px 7px; line-height: 1.35; }
 .btn.file { display: inline-flex; align-items: center; }
 .chk { color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
 

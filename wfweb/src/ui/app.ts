@@ -1,6 +1,6 @@
 // App do editor — estado central + wiring dos painéis (camadas, inspector, notação, assets, canvas).
 import "./styles.css";
-import { parseStructured, setAod, scanAssets } from "../codec/parse.js";
+import { parseStructured, setAod } from "../codec/parse.js";
 import { renderAt, decodeLayer, type JpegCache } from "../codec/render.js";
 import { encodeInPlace, setLayerImageRaster, isPhotoDial, buildPhotoDial, FULL_DIM, THUMB_DIM } from "../codec/encode.js";
 import { rebuildContainer, rebuildSameFootprint, validateContainer } from "../codec/scene.js";
@@ -274,14 +274,9 @@ export class App {
     if (!this.dial) return null;
     const budget = this.dial.raw.length;
     const structural = this.dial.layers.some((l) => l.deleted || l.isClone);
-    if (!structural) {
-      // conteúdo REAL (sem padding) = firstAsset + Σ(8+len). Mostra a folga já existente no arquivo.
-      const assets = scanAssets(this.dial.raw);
-      if (assets.length === 0) return { current: budget, budget, over: false };
-      const firstAsset = assets.reduce((m, a) => Math.min(m, a[0]), this.dial.raw.length);
-      const content = firstAsset + assets.reduce((s, a) => s + 8 + a[4], 0);
-      return { current: content, budget, over: content > budget };
-    }
+    // Sem edição estrutural o pool é mantido verbatim → o arquivo já ocupa 100% do orçamento (não há
+    // folga reaproveitável; p/ adicionar é preciso deletar/erase antes). current == budget.
+    if (!structural) return { current: budget, budget, over: false };
     try {
       const inPlace = encodeInPlace(this.dial);
       const r = rebuildSameFootprint({ ...this.dial, raw: inPlace });

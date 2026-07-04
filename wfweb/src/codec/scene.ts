@@ -249,42 +249,24 @@ export function rebuildSameFootprint(dial: StructDial): RebuildResult {
   const newScene = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
   { let o = 0; for (const p of parts) { newScene.set(p, o); o += p.length; } }
 
-  // offsets que a cena sobrevivente AINDA aponta (varredura u32 == offset de asset).
-  const survivingPtrs = new Set<number>();
-  for (let i = 0; i + 4 <= newScene.length; i++) {
-    const v = u32le(newScene, i);
-    if (oldOffs.has(v)) survivingPtrs.add(v);
-  }
-
-  // assets a DESCARTAR: só os dos elementos deletados que ninguém mais referencia (inclui os frames
-  // de um elemento multi-frame deletado). Tudo o mais (inclusive assets não-mapeados) é mantido.
-  const dropOffs = new Set<number>();
-  for (const l of dial.layers) {
-    if (!l.deleted || l.isClone) continue;
-    const offs = l.frameOffsets && l.frameOffsets.length ? l.frameOffsets : [l.assetOff];
-    for (const o of offs) if (oldOffs.has(o) && !survivingPtrs.has(o)) dropOffs.add(o);
-  }
-
-  // novo pool na ORDEM original, sem os descartados; mapa old→new offset.
-  const kept = assets.filter((a) => !dropOffs.has(a[0])).sort((a, b) => a[0] - b[0]);
+  // POOL VERBATIM: mantém o pool inteiro byte-a-byte (gaps, cauda, assets não-mapeados — tudo
+  // preservado), só relocado por um DELTA UNIFORME (a cena mudou de tamanho → o pool desliza). NÃO
+  // compacta (compactar arriscaria dropar bytes que o scanAssets não reconhece, ex. gaps não-zero do
+  // 342 ou a cauda de 36 B). Assets órfãos de um delete ficam (inofensivos: `len` limita a leitura).
   const newFirst = 0x24 + newScene.length;
-  const oldToNew = new Map<number, number>();
-  let cursor = newFirst;
-  let poolLen = 0;
-  for (const [off, , , , len] of kept) { oldToNew.set(off, cursor); cursor += 8 + len; poolLen += 8 + len; }
-
-  // reescreve os ponteiros da cena old→new (pool re-layoutado).
-  for (let i = 0; i + 4 <= newScene.length; i++) {
-    const v = u32le(newScene, i);
-    const nv = oldToNew.get(v);
-    if (nv !== undefined) { writeU32le(newScene, i, nv); i += 3; }
+  const delta = newFirst - firstAsset;
+  if (delta !== 0) {
+    for (let i = 0; i + 4 <= newScene.length; i++) {
+      const v = u32le(newScene, i);
+      if (oldOffs.has(v)) { writeU32le(newScene, i, v + delta); i += 3; }
+    }
   }
-
-  const contentSize = newFirst + poolLen;
-  if (contentSize > budget) return { bytes: null, contentSize, budget }; // estourou o orçamento
-  // monta o pool (assets mantidos, verbatim) + PAD com zeros até o tamanho original.
+  const poolVerbatim = raw.subarray(firstAsset);
+  const contentSize = newFirst + poolVerbatim.length; // = budget + delta
+  if (contentSize > budget) return { bytes: null, contentSize, budget }; // cresceu → estourou orçamento
+  // pool verbatim + PAD com zeros na cauda até bater o tamanho original (mesmo footprint).
   const pool = new Uint8Array(budget - newFirst);
-  { let o = 0; for (const [off, , , , len] of kept) { pool.set(raw.subarray(off, off + 8 + len), o); o += 8 + len; } }
+  pool.set(poolVerbatim, 0);
   const bytes = buildContainerRaw(perDialId, dial.name, idWord0, newScene, pool);
   return { bytes, contentSize, budget };
 }

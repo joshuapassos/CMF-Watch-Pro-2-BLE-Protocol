@@ -9,7 +9,8 @@ import { simEnv } from "../codec/mock.js";
 import type { Layer, MockKind, Notation, StructDial } from "../codec/types.js";
 import { drawToCanvas, pointerToCanvas } from "./canvas.js";
 import { readFileBytes, downloadBytes, outName } from "./fileio.js";
-import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg } from "./imageutil.js";
+import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg, rescaleRgba } from "./imageutil.js";
+import { decodeAssetToRgba } from "../codec/rgb565.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -401,6 +402,9 @@ export class App {
     this.inspBody.className = "";
     const movable = (l.xOff !== undefined && l.yOff !== undefined) || !!l.isClone;
     const pivotable = l.pivxOff !== undefined && l.pivyOff !== undefined;
+    // Resize = reescala a imagem + reescreve as dimensões (dimsWord) in-place. Só p/ sprites raster
+    // (image/background, cf≠1) com asset próprio. Same-footprint: o raster novo deve caber no slot.
+    const resizable = (l.kind === "image" || l.kind === "background") && l.cf !== 1 && l.assetOff > 0 && l.assetLen > 0;
     const hasColor = l.kind === "arc" || (l.kind === "text" && l.cf === 13) || l.colorOff !== undefined;
     const isArc = l.kind === "arc";
     const isDataBound = l.kind === "text" || l.kind === "pointer" || l.kind === "arc";
@@ -412,6 +416,8 @@ export class App {
       <div class="field"><label>Type</label><span>${iconFor(l.kind)} ${l.kind} · cf${l.cf} · ${l.w}×${l.h}${l.frames ? ` · ${l.frames} frames` : ""}</span></div>
       <div class="field"><label>X</label><input type="number" id="fX" value="${l.x}" ${movable ? "" : "disabled"}></div>
       <div class="field"><label>Y</label><input type="number" id="fY" value="${l.y}" ${movable ? "" : "disabled"}></div>
+      ${resizable ? `<div class="field"><label title="Redimensiona o elemento: reescala a imagem e atualiza as dimensões (in-place). O raster novo precisa caber no slot original.">W</label><input type="number" id="fW" value="${l.w}" min="1" max="466"></div>` : ""}
+      ${resizable ? `<div class="field"><label>H</label><input type="number" id="fH" value="${l.h}" min="1" max="466"></div>` : ""}
       <div class="field"><label>Pivot X</label><input type="number" id="fPX" value="${l.pivotX}" ${pivotable ? "" : "disabled"}></div>
       <div class="field"><label>Pivot Y</label><input type="number" id="fPY" value="${l.pivotY}" ${pivotable ? "" : "disabled"}></div>
       ${isDataBound ? `<div class="field"><label>Source${persistNote}</label><select id="fSrc"></select></div>` : ""}
@@ -506,6 +512,19 @@ export class App {
     bindNum("fY", (v) => (l.y = v));
     bindNum("fPX", (v) => (l.pivotX = v));
     bindNum("fPY", (v) => (l.pivotY = v));
+    if (resizable) {
+      const fW = document.getElementById("fW") as HTMLInputElement | null;
+      const fH = document.getElementById("fH") as HTMLInputElement | null;
+      const doResize = () => {
+        const nw = Math.max(1, Math.min(466, parseInt(fW?.value || "0", 10) | 0));
+        const nh = Math.max(1, Math.min(466, parseInt(fH?.value || "0", 10) | 0));
+        if (nw === l.w && nh === l.h) return;
+        this.pushUndoDebounced();
+        this.resizeLayer(l, nw, nh);
+      };
+      fW?.addEventListener("change", doResize);
+      fH?.addEventListener("change", doResize);
+    }
     if (isArc) bindNum("fMax", (v) => (l.arcMax = v || 100));
     if (l.digitCountOff !== undefined) {
       bindNum("fDigits", (v) => (l.digitCount = Math.max(1, Math.min(9, v))));
@@ -651,6 +670,29 @@ export class App {
   }
 
   // ---- Troca de imagem de uma camada ----
+  /** Redimensiona um sprite raster: reescala a imagem atual p/ nw×nh, re-rasteriza no cf e marca o
+   *  dimsWord p/ reescrita in-place. Same-footprint (o raster novo deve caber no slot). */
+  private resizeLayer(l: Layer, nw: number, nh: number): void {
+    if (!this.dial || l.cf === 1) return;
+    try {
+      const payload = l.newPayload ?? this.dial.raw.subarray(l.assetOff + 8, l.assetOff + 8 + l.assetLen);
+      const cur = decodeAssetToRgba(payload, l.cf, l.w, l.h); // RGBA nas dimensões atuais
+      const scaled = rescaleRgba(cur, l.w, l.h, nw, nh);
+      l.w = nw; l.h = nh; l.resized = true;
+      const sz = setLayerImageRaster(l, scaled); // rasteriza no novo w×h
+      this.buildInspector();
+      this.render();
+      this.refreshJson();
+      if (sz > l.assetLen) {
+        this.status(`Resized ${nw}×${nh}, mas comprime ${sz}B > ${l.assetLen}B — não cabe no slot; o export vai falhar até caber (diminua ou simplifique a arte).`, "err");
+      } else {
+        this.status(`Resized ${nw}×${nh} (${sz}B ≤ ${l.assetLen}B). ✓ Same-footprint — teste no relógio (resize é in-place mas não 100% verificado).`, "ok");
+      }
+    } catch (err) {
+      this.status("Resize falhou: " + (err as Error).message, "err");
+    }
+  }
+
   private replaceLayerImage(index: number): void {
     const d = this.dial;
     const l = d?.layers[index];

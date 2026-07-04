@@ -43,6 +43,17 @@ export function bitmapToRgbaCoverSquare(bmp: ImageBitmap, dim: number): Uint8Cla
   return ctx.getImageData(0, 0, dim, dim).data;
 }
 
+/** Reescala um RGBA (ow×oh) p/ (nw×nh) via canvas (suave). P/ resize de elemento. */
+export function rescaleRgba(data: Uint8ClampedArray | Uint8Array, ow: number, oh: number, nw: number, nh: number): Uint8ClampedArray {
+  const src = scratch(ow, oh);
+  src.ctx.putImageData(new ImageData(new Uint8ClampedArray(data), ow, oh), 0, 0);
+  const dst = scratch(nw, nh);
+  dst.ctx.imageSmoothingEnabled = true;
+  dst.ctx.imageSmoothingQuality = "high";
+  dst.ctx.drawImage(src.cv, 0, 0, nw, nh);
+  return dst.ctx.getImageData(0, 0, nw, nh).data;
+}
+
 /** Decodifica um payload JPEG (bytes) em RGBA w×h. */
 export async function jpegPayloadToRgba(payload: Uint8Array, w: number, h: number): Promise<Uint8ClampedArray> {
   const blob = new Blob([payload.slice()], { type: "image/jpeg" });

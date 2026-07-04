@@ -59,6 +59,11 @@ export function encodeInPlace(dial: StructDial): Uint8Array {
         );
       }
       const off = layer.assetOff;
+      // Resize: reescreve o dimsWord (cf|w<<10|h<<21) in-place p/ as novas dimensões.
+      if (layer.resized) {
+        const dw = ((layer.cf & 0x1f) | ((layer.w & 0x7ff) << 10) | ((layer.h & 0x7ff) << 21)) >>> 0;
+        writeU32le(out, off, dw);
+      }
       writeU32le(out, off + 4, payload.length);
       out.set(payload, off + 8);
       // zera a cauda do payload antigo (cosmético; `len` já limita a leitura).

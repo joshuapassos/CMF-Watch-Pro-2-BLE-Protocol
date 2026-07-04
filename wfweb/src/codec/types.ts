@@ -54,6 +54,8 @@ export interface Layer {
   pivyOff?: number;
   /** Payload LZ4 novo (setado por uma troca de imagem); aplicado no `encodeInPlace`. */
   newPayload?: Uint8Array;
+  /** Elemento redimensionado: reescreve o `dimsWord` (cf|w|h) em `assetOff` no export (com newPayload). */
+  resized?: boolean;
   visible: boolean;
   /** Dado de runtime que este elemento mostra (mock no preview; NÃO persistido no `.bin`). */
   mock: MockKind;

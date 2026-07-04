@@ -44,6 +44,9 @@ export class App {
   private wire(): void {
     $<HTMLInputElement>("openBin").addEventListener("change", (e) => this.onOpenBin(e));
     $<HTMLInputElement>("openPhoto").addEventListener("change", (e) => this.onNewPhoto(e));
+    $("btnTemplate").addEventListener("click", () => this.openTemplateGallery());
+    $("templateClose").addEventListener("click", () => this.closeTemplateGallery());
+    $("templateModal").addEventListener("click", (e) => { if (e.target === $("templateModal")) this.closeTemplateGallery(); });
     $("btnExport").addEventListener("click", () => this.onExport());
     $("btnPlay").addEventListener("click", () => this.togglePlay());
     $("btnApplyJson").addEventListener("click", () => this.onApplyJson());
@@ -79,6 +82,11 @@ export class App {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
     const bytes = await readFileBytes(file);
+    await this.loadDialBytes(bytes, file.name);
+  }
+
+  /** Carrega bytes de um `.bin` estruturado no editor (compartilhado por Open .bin e templates). */
+  private async loadDialBytes(bytes: Uint8Array, sourceName: string): Promise<void> {
     if (isPhotoDial(bytes)) {
       this.status(
         "This is a <b>photo dial</b> (6c8dc4a5). The layer editor works with <b>structured</b> " +
@@ -101,11 +109,51 @@ export class App {
       this.enableUi(true);
       this.refreshAll();
       this.status(
-        `Opened <code>${file.name}</code> — id ${dial.perDialId}, \u201c${dial.name}\u201d, ${dial.layers.length} layers.`,
+        `Opened <code>${sourceName}</code> — id ${dial.perDialId}, \u201c${dial.name}\u201d, ${dial.layers.length} layers.`,
         "ok",
       );
     } catch (err) {
       this.status(`Parse failed: ${(err as Error).message}`, "err");
+    }
+  }
+
+  /** Catálogo de templates (bases boas p/ re-skin in-place), servidos de /templates. */
+  private static readonly TEMPLATES: Array<{ id: string; name: string; style: string }> = [
+    { id: "290", name: "Gradual", style: "Fundo / foto — maior canvas re-skinável" },
+    { id: "309", name: "Gradient", style: "Analógico + fundo custom" },
+    { id: "353", name: "Dual-phase", style: "Analógico clássico (números 1–12)" },
+    { id: "275", name: "SlopeTime", style: "Rico em dados (temp/passos/kcal)" },
+    { id: "376", name: "Digits time", style: "Digital grande" },
+  ];
+
+  private openTemplateGallery(): void {
+    const grid = $("templateGrid");
+    grid.innerHTML = "";
+    for (const t of App.TEMPLATES) {
+      const card = document.createElement("button");
+      card.className = "tpl-card";
+      card.type = "button";
+      card.innerHTML =
+        `<img src="/templates/${t.id}.png" alt="${t.name}" loading="lazy">` +
+        `<div class="tpl-name">${t.name}</div><div class="tpl-style">${t.style}</div>`;
+      card.addEventListener("click", () => { this.closeTemplateGallery(); void this.loadTemplate(t); });
+      grid.appendChild(card);
+    }
+    $("templateModal").hidden = false;
+  }
+
+  private closeTemplateGallery(): void {
+    $("templateModal").hidden = true;
+  }
+
+  private async loadTemplate(t: { id: string; name: string }): Promise<void> {
+    try {
+      const resp = await fetch(`/templates/${t.id}.bin`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      await this.loadDialBytes(bytes, `${t.name} (template)`);
+    } catch (err) {
+      this.status(`Template load failed: ${(err as Error).message}`, "err");
     }
   }
 

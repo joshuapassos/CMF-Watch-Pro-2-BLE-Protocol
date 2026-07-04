@@ -13,6 +13,7 @@
       <label class="btn file">
         📂 Open .bin<input id="openBin" type="file" accept=".bin" hidden />
       </label>
+      <button id="btnTemplate" class="btn">✨ New from template</button>
       <label class="btn file">
         🖼 New photo dial<input id="openPhoto" type="file" accept="image/*" hidden />
       </label>
@@ -56,6 +57,17 @@
         </div>
       </aside>
     </main>
+
+    <div id="templateModal" class="modal" hidden>
+      <div class="modal-box">
+        <div class="modal-head">
+          <h2>Novo a partir de template</h2>
+          <button id="templateClose" class="btn" type="button">✕</button>
+        </div>
+        <p class="modal-sub">Escolha uma base e personalize in-place (troque imagens, cor, posição, esconda o que não quer). Same-footprint → ativa no relógio.</p>
+        <div id="templateGrid" class="tpl-grid"></div>
+      </div>
+    </div>
 
     <div id="status" class="status">Ready. Open a watchface <code>.bin</code> to start.</div>
 

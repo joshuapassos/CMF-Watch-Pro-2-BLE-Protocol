@@ -84,7 +84,7 @@ async function run() {
       const dial = parseStructured(bytes);
       row.layers = dial.layers.length;
       const jpeg = await predecodeJpegs(dial);
-      row.render = renderAt(dial, 10, 12, 0, jpeg);
+      row.render = renderAt(dial, 10, 10, 0, jpeg); // hora dos thumbnails oficiais (10:10)
       row.asset = await loadAsset(e.id);
       if (row.asset) {
         const d = diff(row.render.data, row.asset);

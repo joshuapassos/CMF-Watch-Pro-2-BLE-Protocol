@@ -9,8 +9,9 @@ import { simEnv } from "../codec/mock.js";
 import type { Layer, MockKind, Notation, StructDial } from "../codec/types.js";
 import { drawToCanvas, pointerToCanvas } from "./canvas.js";
 import { readFileBytes, downloadBytes, outName } from "./fileio.js";
-import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg, rescaleRgba } from "./imageutil.js";
-import { decodeAssetToRgba } from "../codec/rgb565.js";
+import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg, rescaleRgba, compositeImage } from "./imageutil.js";
+import { decodeAssetToRgba, rgbaToRasterForCf } from "../codec/rgb565.js";
+import { lz4CompressBest, lz4CompressLiteralsOnly } from "../codec/lz4.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -48,6 +49,7 @@ export class App {
     $("btnTemplate").addEventListener("click", () => this.openTemplateGallery());
     $("templateClose").addEventListener("click", () => this.closeTemplateGallery());
     $("templateModal").addEventListener("click", (e) => { if (e.target === $("templateModal")) this.closeTemplateGallery(); });
+    $("btnBake").addEventListener("click", () => this.bakeToBackground());
     $("btnExport").addEventListener("click", () => this.onExport());
     $("btnPlay").addEventListener("click", () => this.togglePlay());
     $("btnApplyJson").addEventListener("click", () => this.onApplyJson());
@@ -189,7 +191,7 @@ export class App {
   }
 
   private enableUi(on: boolean): void {
-    for (const id of ["btnExport", "btnPlay", "btnApplyJson"]) ($(id) as HTMLButtonElement).disabled = !on;
+    for (const id of ["btnExport", "btnPlay", "btnApplyJson", "btnBake"]) ($(id) as HTMLButtonElement).disabled = !on;
     // AOD editing is available only when the dial actually has an always-on variant.
     const hasAod = !!on && (!!this.dial?.aod || (this.dial?.layers.some((l) => l.aod) ?? false));
     ($("segAod") as HTMLButtonElement).disabled = !hasAod;
@@ -429,9 +431,13 @@ export class App {
       ${l.frames && l.frames > 1 && !isArc ? `<div class="field"><label>Frame</label><input type="range" id="fFrame" min="0" max="${l.frames - 1}" value="${l.previewFrame ?? 0}"><span id="fFrameV">${l.previewFrame ?? "auto"}</span></div>` : ""}
       <div class="field"><label>Data (mock)</label><select id="fMock"></select></div>
       <div class="field"><label>Visible</label><input type="checkbox" id="fVis" ${l.visible ? "checked" : ""}></div>
-      ${l.multiFrame ? `<div class="field note">Multi-frame: o relógio escolhe o frame por tempo/dado (não é autoplay). Use o scrubber "Frame" p/ ver cada um.</div>` : ""}
-      ${l.multiFrame ? `<div class="field full"><button class="btn wide" id="fFramesFiles" title="Sobe ${l.frames} imagens (1 por frame, em ordem alfabética do nome). Cada uma re-skina um frame (same-footprint por frame).">🎞 Replace frames (${l.frames} files)…</button></div>` : ""}
-      ${l.multiFrame ? "" : `<div class="field full"><button class="btn wide" id="fReplace">🖼 Replace image…</button></div>`}
+      ${(l.multiFrame || l.frameSheet) ? `<div class="field note">Multi-frame: o relógio escolhe o frame por tempo/dado (${l.mock !== "none" ? l.mock : "valor"}). Use o scrubber "Frame" p/ ver cada um.</div>` : ""}
+      ${(l.multiFrame || l.frameSheet) ? `<div class="field full"><button class="btn wide" id="fFramesFiles" title="Sobe ${l.frames} imagens (1 por frame, em ordem alfabética do nome). Cada uma re-skina um frame (same-footprint por frame).">🎞 Replace frames (${l.frames} files)…</button></div>` : ""}
+      ${(l.multiFrame || l.frameSheet || l.kind === "pointer") ? "" : `<div class="field full"><button class="btn wide" id="fReplace">🖼 Replace image…</button></div>`}
+      ${l.kind === "pointer" ? `<div class="field note">Motion: o ponteiro gira sempre (${l.mock !== "none" ? l.mock : "tempo"}). Hand = imagem no lugar do ponteiro; Orbit = elemento circula o centro; Walk = anda pelo topo e some no resto (centro de rotação embaixo).</div>` : ""}
+      ${l.kind === "pointer" ? `<div class="field"><label>Motion</label><select id="fMotion"><option value="hand">Hand (re-skin)</option><option value="orbit">Orbit</option><option value="walk">Walk (top)</option></select></div>` : ""}
+      ${l.kind === "pointer" ? `<div class="field"><label title="Tamanho do elemento em pixels (nuvem, sol, etc.)">Element px</label><input type="number" id="fMotSize" value="${Math.min(Math.max(l.w, 48), 96)}" min="8" max="200"></div>` : ""}
+      ${l.kind === "pointer" ? `<div class="field full"><button class="btn wide" id="fMotImg">🖼 Set element image…</button></div>` : ""}
       <div class="field full"><button class="btn wide" id="fErase">🧽 Erase (keep size)</button></div>
       <div class="field full"><button class="btn wide" id="fDup">⧉ Duplicate layer</button></div>
       <div class="field full"><button class="btn wide danger" id="fDelete">🗑 Delete layer</button></div>
@@ -568,6 +574,11 @@ export class App {
     });
     document.getElementById("fReplace")?.addEventListener("click", () => this.replaceLayerImage(this.selected));
     document.getElementById("fFramesFiles")?.addEventListener("click", () => this.replaceFrames(this.selected));
+    document.getElementById("fMotImg")?.addEventListener("click", () => {
+      const mode = (document.getElementById("fMotion") as HTMLSelectElement | null)?.value ?? "hand";
+      const size = Math.max(8, Math.min(200, parseInt((document.getElementById("fMotSize") as HTMLInputElement | null)?.value || "60", 10) | 0));
+      this.applyPointerMotion(this.selected, mode as "hand" | "orbit" | "walk", size);
+    });
     // Apaga a camada trocando seu asset por um raster TRANSPARENTE do mesmo w×h. Comprime pequeno
     // (≤ len original) → SAME-FOOTPRINT: o export fica com o tamanho idêntico e instala pelo re-skin
     // (delete muda o tamanho → a065=0x0a no relógio). Ideal p/ "sumir" com um elemento (ex.: colon).
@@ -670,6 +681,95 @@ export class App {
   }
 
   // ---- Troca de imagem de uma camada ----
+  /** Achata as imagens ESTÁTICAS no fundo (tela cheia) e apaga as originais (transparente). Embute a
+   *  sobreposição/z-order na arte do fundo. Tudo in-place same-footprint. Movimento (pointer/frames)
+   *  fica de fora (continua por cima). */
+  private bakeToBackground(): void {
+    const d = this.dial;
+    if (!d) return;
+    const bg = d.layers.find((l) => l.kind === "background" && !l.aod && l.assetOff > 0 && l.cf !== 1);
+    if (!bg) { this.status("Base sem fundo re-skinável (cf≠1).", "err"); return; }
+    const bake = d.layers.filter((l) =>
+      l !== bg && !l.deleted && !l.aod && l.visible && l.assetOff > 0 && l.cf !== 1
+      && l.kind === "image" && !l.multiFrame && !l.frameSheet);
+    if (!bake.length) { this.status("Nada estático pra achatar (só há fundo/ponteiros/frames/texto).", "err"); return; }
+    this.pushUndo();
+    try {
+      const BW = bg.w, BH = bg.h;
+      const dec = (l: Layer) => decodeAssetToRgba(l.newPayload ?? d.raw.subarray(l.assetOff + 8, l.assetOff + 8 + l.assetLen), l.cf, l.w, l.h);
+      const canvas = new Uint8ClampedArray(dec(bg)); // base = fundo atual
+      for (const l of bake) {
+        const src = dec(l), sw = l.w, sh = l.h, ox = l.x - bg.x, oy = l.y - bg.y;
+        for (let y = 0; y < sh; y++) { const py = oy + y; if (py < 0 || py >= BH) continue;
+          for (let x = 0; x < sw; x++) { const px = ox + x; if (px < 0 || px >= BW) continue;
+            const s = (y * sw + x) * 4, dp = (py * BW + px) * 4, a = src[s + 3] / 255; if (a <= 0) continue;
+            canvas[dp] = Math.round(src[s] * a + canvas[dp] * (1 - a));
+            canvas[dp + 1] = Math.round(src[s + 1] * a + canvas[dp + 1] * (1 - a));
+            canvas[dp + 2] = Math.round(src[s + 2] * a + canvas[dp + 2] * (1 - a));
+            canvas[dp + 3] = 255;
+          } }
+      }
+      const sz = setLayerImageRaster(bg, canvas);
+      if (sz > bg.assetLen) {
+        bg.newPayload = undefined;
+        this.status(`Bake não cabe: ${sz}B > ${bg.assetLen}B do slot do fundo. Use uma base com fundo maior/mais compressível.`, "err");
+        return;
+      }
+      for (const l of bake) setLayerImageRaster(l, new Uint8ClampedArray(l.w * l.h * 4)); // apaga (transparente)
+      this.refreshAll();
+      this.status(`Bake: ${bake.length} imagem(ns) achatada(s) no fundo (${sz}B ≤ ${bg.assetLen}B). ✓`, "ok");
+    } catch (err) {
+      this.status("Bake falhou: " + (err as Error).message, "err");
+    }
+  }
+
+  /** Transforma um PONTEIRO num elemento animado (Hand/Orbit/Walk) re-skinando o sprite + geometria,
+   *  tudo in-place (o firmware gira o ponteiro → o elemento se move). Same-footprint. */
+  private applyPointerMotion(index: number, mode: "hand" | "orbit" | "walk", size: number): void {
+    const d = this.dial;
+    const l = d?.layers[index];
+    if (!d || !l || l.kind !== "pointer") return;
+    if (l.cf === 1) { this.status("Ponteiro cf1 (JPEG) não tem alpha — motion aqui precisa de cf5.", "err"); return; }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      this.pushUndo();
+      try {
+        const bmp = await fileToBitmap(file);
+        let W: number, H: number, pivotX: number, pivotY: number, x: number, y: number, sprite: Uint8ClampedArray;
+        if (mode === "hand") {
+          W = l.w; H = l.h; pivotX = l.pivotX; pivotY = l.pivotY; x = l.x; y = l.y;
+          sprite = compositeImage(bmp, W, H, 0, 0, W, H);
+        } else {
+          const s = Math.max(8, Math.min(200, size));
+          const R = mode === "orbit" ? 196 : 430;          // walk usa raio grande → topo plano
+          W = s; H = Math.min(466, R + s);
+          pivotX = Math.round(W / 2); pivotY = H - 1;
+          const radius = pivotY - s / 2;                    // dist. pivô → centro do elemento (no topo)
+          if (mode === "orbit") { x = 233 - pivotX; y = 233 - pivotY; }   // gira em torno do centro do dial
+          else { const CY = 60 + radius; x = 233 - pivotX; y = Math.round(CY - pivotY); } // centro abaixo da tela
+          sprite = compositeImage(bmp, W, H, 0, 0, s, s);   // elemento no topo, centrado (W=s)
+        }
+        l.w = W; l.h = H; l.pivotX = pivotX; l.pivotY = pivotY; l.x = x; l.y = y; l.resized = true;
+        const sz = setLayerImageRaster(l, sprite);
+        this.buildInspector();
+        this.render();
+        this.refreshJson();
+        if (sz > l.assetLen) {
+          this.status(`Motion "${mode}" aplicado mas o sprite comprime ${sz}B > ${l.assetLen}B — não cabe; diminua o Element px.`, "err");
+        } else {
+          this.status(`Motion "${mode}" aplicado (${W}×${H}, ${sz}B ≤ ${l.assetLen}B). Aperte ▶ p/ ver girar.`, "ok");
+        }
+      } catch (err) {
+        this.status("Motion falhou: " + (err as Error).message, "err");
+      }
+    });
+    input.click();
+  }
+
   /** Redimensiona um sprite raster: reescala a imagem atual p/ nw×nh, re-rasteriza no cf e marca o
    *  dimsWord p/ reescrita in-place. Same-footprint (o raster novo deve caber no slot). */
   private resizeLayer(l: Layer, nw: number, nh: number): void {
@@ -730,18 +830,28 @@ export class App {
    *  cache de preview. Lança se não couber. */
   private async setFrame(l: Layer, i: number, rgba: Uint8ClampedArray): Promise<number> {
     const cap = l.frameLens![i];
-    const jpeg = await rgbaToJpeg(rgba, l.w, l.h, cap); // lança se não couber nem no q mínimo
+    let bytes: Uint8Array;
+    if (l.cf === 1) {
+      bytes = await rgbaToJpeg(rgba, l.w, l.h, cap); // JPEG (picregion cf1)
+    } else {
+      // cf5/cf13/cf4: RGB565(+alpha) via LZ4 (mesma via do setLayerImageRaster)
+      const raster = rgbaToRasterForCf(rgba, l.w, l.h, l.cf);
+      bytes = lz4CompressBest(raster);
+      if (bytes.length > cap) { const lit = lz4CompressLiteralsOnly(raster); if (lit.length < bytes.length) bytes = lit; }
+      if (bytes.length > cap) throw new Error(`frame ${i} não cabe (${bytes.length}B > ${cap}B)`);
+    }
     if (!l.newFramePayloads) l.newFramePayloads = new Array(l.frameOffsets!.length).fill(null);
-    l.newFramePayloads[i] = jpeg;
-    this.jpegCache.set(l.frameOffsets![i], { w: l.w, h: l.h, data: rgba });
-    return jpeg.length;
+    l.newFramePayloads[i] = bytes;
+    // cf1 renderiza do cache JPEG; cf≠1 renderiza via atlasGlyphs (que honra newFramePayloads).
+    if (l.cf === 1) this.jpegCache.set(l.frameOffsets![i], { w: l.w, h: l.h, data: rgba });
+    return bytes.length;
   }
 
   /** Sobe N imagens (1 por frame, ordem alfabética/numérica) e re-skina cada frame same-footprint. */
   private replaceFrames(index: number): void {
     const d = this.dial;
     const l = d?.layers[index];
-    if (!d || !l || !l.multiFrame || !l.frameOffsets) return;
+    if (!d || !l || !l.frameOffsets || !(l.multiFrame || l.frameSheet)) return;
     const n = l.frameOffsets.length;
     const input = document.createElement("input");
     input.type = "file";

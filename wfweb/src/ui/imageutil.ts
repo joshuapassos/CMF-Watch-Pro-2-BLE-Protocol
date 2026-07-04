@@ -54,6 +54,16 @@ export function rescaleRgba(data: Uint8ClampedArray | Uint8Array, ow: number, oh
   return dst.ctx.getImageData(0, 0, nw, nh).data;
 }
 
+/** Sprite transparente sw×sh com `bmp` desenhado em (dx,dy) no tamanho dw×dh. P/ elemento no ponteiro. */
+export function compositeImage(bmp: ImageBitmap, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): Uint8ClampedArray {
+  const { ctx } = scratch(sw, sh);
+  ctx.clearRect(0, 0, sw, sh);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bmp, dx, dy, dw, dh);
+  return ctx.getImageData(0, 0, sw, sh).data;
+}
+
 /** Decodifica um payload JPEG (bytes) em RGBA w×h. */
 export async function jpegPayloadToRgba(payload: Uint8Array, w: number, h: number): Promise<Uint8ClampedArray> {
   const blob = new Blob([payload.slice()], { type: "image/jpeg" });

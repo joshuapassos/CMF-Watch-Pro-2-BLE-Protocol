@@ -623,6 +623,10 @@ export function parseStructured(bin: Uint8Array): StructDial {
         mock: kind === "pointer" && d.sourceId !== undefined ? pointerRole(d.sourceId) : sheetMock,
         sourceId: d.sourceId,
         frames: d.frameCount > 1 ? d.frameCount : undefined,
+        // Sheet indexado por valor (cf≠1) com frames editáveis: carrega offsets/lens p/ o re-skin.
+        frameSheet: d.frameCount > 1 && kind !== "pointer" && !!d.frameOffsets ? true : undefined,
+        frameOffsets: d.frameCount > 1 ? d.frameOffsets : undefined,
+        frameLens: d.frameCount > 1 ? d.frameLens : undefined,
         aod: d.aod || undefined,
       }));
       idx += 1;

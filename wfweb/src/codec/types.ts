@@ -75,10 +75,11 @@ export interface Layer {
   arcWidth?: number;
   /** Override de frame p/ preview (scrubber do editor); undefined = frame vem do valor mock. */
   previewFrame?: number;
-  /** Elemento MULTI-FRAME com assets por-frame editáveis (picregion ou picarray de irmãos). O relógio
-   *  escolhe o frame por TEMPO/DADO (hora/min/etc.) — NÃO é autoplay livre (o `.bin` custom não suporta
-   *  autoplay; isso é firmware-only via jx_pic_anim). Usado p/ re-skin frame a frame + scrubber no preview. */
+  /** Elemento MULTI-FRAME cf=1 (JPEG picregion/picarray) — render lê do cache JPEG por-frame. */
   multiFrame?: boolean;
+  /** Sheet indexado por VALOR (hora/min/etc.) com frames re-skináveis, qualquer cf (esp. cf5). Render
+   *  usa o caminho `atlasGlyphs`/`sheetFrameIdx` (não o cache JPEG). Distinto de `multiFrame` (cf1). */
+  frameSheet?: boolean;
   /** Offsets absolutos (dimsWord) de CADA frame no `raw` (walk consecutivo / bases dos irmãos).
    *  Alinhado a `frameLens`. */
   frameOffsets?: number[];

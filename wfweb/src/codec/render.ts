@@ -33,8 +33,10 @@ export function decodeLayer(dial: StructDial, layer: Layer, jpeg?: JpegCache): R
   return { w: layer.w, h: layer.h, data };
 }
 
-/** Glifos do atlas cujo "0" está em `baseOff`: assets cf/w/h consecutivos = 0123456789(+pontuação). */
-export function atlasGlyphs(dial: StructDial, baseOff: number, max: number): RgbaImage[] {
+/** Glifos do atlas cujo "0" está em `baseOff`: assets cf/w/h consecutivos = 0123456789(+pontuação).
+ *  `over` (opcional) = frames re-skinados (frameSheet): se o offset do frame casa, decodifica o
+ *  payload novo em vez do asset do `raw` — pro preview refletir o re-skin. */
+export function atlasGlyphs(dial: StructDial, baseOff: number, max: number, over?: { offsets: number[]; payloads: (Uint8Array | null)[] }): RgbaImage[] {
   const assets = scanAssets(dial.raw).sort((a, b) => a[0] - b[0]);
   const start = assets.findIndex((a) => a[0] === baseOff);
   if (start < 0) return [];
@@ -45,9 +47,11 @@ export function atlasGlyphs(dial: StructDial, baseOff: number, max: number): Rgb
     // Só o cf precisa casar: glifos-arte (ex. 284) têm w/h por-dígito diferentes; a frame-table
     // limita a contagem via `max`. (Antes exigia w/h iguais → só 4-5 dos 10 glifos decodavam.)
     if (cf !== cf0) break;
+    const ovIdx = over ? over.offsets.indexOf(off) : -1;
+    const newPayload = ovIdx >= 0 ? over!.payloads[ovIdx] ?? undefined : undefined;
     const ly: Layer = {
       kind: "image", name: "", cf, w, h, assetOff: off, assetLen: len,
-      x: 0, y: 0, pivotX: 0, pivotY: 0, visible: true, mock: "none",
+      x: 0, y: 0, pivotX: 0, pivotY: 0, visible: true, mock: "none", newPayload,
     };
     out.push(decodeLayer(dial, ly));
   }
@@ -258,7 +262,10 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
         ? layer.previewFrame
         : sheetFrameIdx(layer.mock, layer.frames, hh, mm, ss);
       if (idx === null) continue;
-      const frames = atlasGlyphs(dial, layer.assetOff, layer.frames);
+      const over = layer.newFramePayloads && layer.frameOffsets
+        ? { offsets: layer.frameOffsets, payloads: layer.newFramePayloads }
+        : undefined;
+      const frames = atlasGlyphs(dial, layer.assetOff, layer.frames, over);
       img = frames[Math.min(idx, frames.length - 1)] ?? decodeLayer(dial, layer, jpeg);
     } else {
       img = decodeLayer(dial, layer, jpeg);

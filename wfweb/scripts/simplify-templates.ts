@@ -13,7 +13,7 @@ import type { Layer } from "../src/codec/types.js";
 
 type RGB = [number, number, number];
 const PAL: Record<string, [RGB, RGB, RGB]> = { // [topo, base, acento]
-  "290": [[38, 44, 92], [12, 14, 30], [120, 150, 255]],
+  "290": [[46, 130, 150], [40, 24, 78], [150, 200, 220]],   // aurora teal→roxo
   "309": [[70, 24, 30], [14, 14, 20], [255, 120, 92]],
   "353": [[26, 28, 36], [10, 10, 14], [220, 224, 235]],
   "275": [[16, 34, 60], [8, 10, 18], [120, 200, 255]],
@@ -83,43 +83,33 @@ for (const id of ["290", "309", "275"]) {
   const assets = scanAssets(raw); // [off,cf,w,h,len]
   const byOff = new Map(assets.map((a) => [a[0], a]));
 
-  // papéis por offset
+  // LIMPO: fundo=gradiente, ponteiro=mão afilada, TODO O RESTO some (cf5/13/24 → transparente;
+  // cf4 sem alpha → preenchido com a cor do gradiente na altura do elemento, pra não virar caixa preta).
   const bgOff = d.layers.find((l) => l.kind === "background" && !l.aod)?.assetOff ?? -1;
   const handOff = new Map<number, RGB>();
-  for (const l of d.layers) if (l.kind === "pointer") handOff.set(l.assetOff, l.mock === "seconds" ? accent : HAND);
-  // frames de SHEETS indexados por valor (anel de marcas / posicional) → viram TICKS, não dígitos.
-  const u32 = (o: number) => (raw[o] | (raw[o + 1] << 8) | (raw[o + 2] << 16) | (raw[o + 3] << 24)) >>> 0;
-  const tickOff = new Set<number>();
+  const layerY = new Map<number, number>();
   for (const l of d.layers) {
-    if ((l.frames ?? 1) <= 1 || l.aod) continue;
-    let off = l.assetOff;
-    for (let k = 0; k < l.frames! && byOff.has(off); k++) { tickOff.add(off); off += 8 + u32(off + 4); }
+    if (l.aod) continue;
+    if (l.kind === "pointer") handOff.set(l.assetOff, l.mock === "seconds" ? accent : HAND);
+    if (!layerY.has(l.assetOff)) layerY.set(l.assetOff, l.y + l.h / 2);
   }
-  // atlas de dígitos = run de assets consecutivos com mesmo cf/dims, tamanho 10..14, FORA dos sheets.
-  const sorted = [...assets].sort((a, b) => a[0] - b[0]);
-  const glyphIndex = new Map<number, number>();
-  for (let i = 0; i < sorted.length; i++) {
-    const [off0, cf, w, h] = sorted[i];
-    if (w < 8 || h < 8 || w > 220 || h > 220 || tickOff.has(off0)) continue;
-    let j = i; while (j + 1 < sorted.length && sorted[j + 1][1] === cf && sorted[j + 1][2] === w && sorted[j + 1][3] === h && !tickOff.has(sorted[j + 1][0])) j++;
-    const runLen = j - i + 1;
-    if (runLen >= 10 && runLen <= 14) { for (let k = i; k <= j; k++) glyphIndex.set(sorted[k][0], k - i); i = j; }
-  }
+  const gcol = (yc: number): RGB => { const t = Math.max(0, Math.min(1, yc / 466)); return [Math.round(top[0] + (bot[0] - top[0]) * t), Math.round(top[1] + (bot[1] - top[1]) * t), Math.round(top[2] + (bot[2] - top[2]) * t)]; };
 
   const out = raw.slice();
-  let stats = { bg: 0, hand: 0, digit: 0, tick: 0, hidden: 0, skip: 0 };
+  let stats = { bg: 0, hand: 0, hidden: 0, skip: 0 };
   for (const [off, cf, w, h, len] of assets) {
     if (cf === 1) { stats.skip++; continue; }
     let art: Uint8ClampedArray;
     if (off === bgOff) { art = gradient(w, h, top, bot); stats.bg++; }
     else if (handOff.has(off)) { art = hand(w, h, handOff.get(off)!); stats.hand++; }
-    else if (tickOff.has(off)) { art = tick(w, h, accent); stats.tick++; }             // frame de anel → tick
-    else if (glyphIndex.has(off)) { const gi = glyphIndex.get(off)!; art = new Uint8ClampedArray(w * h * 4); if (gi < 10) drawDigit(art, w, h, w, h, gi, [235, 238, 245]); stats.digit++; }
-    else if (w <= 60 && h <= 60) { art = tick(w, h, accent); stats.tick++; }         // marca pequena → tick
-    else { art = new Uint8ClampedArray(w * h * 4); stats.hidden++; }                   // decorativo grande → some
+    else if (cf === 4) {
+      const c = gcol(layerY.get(off) ?? 233); art = new Uint8ClampedArray(w * h * 4);
+      for (let i = 0; i < w * h; i++) { art[i * 4] = c[0]; art[i * 4 + 1] = c[1]; art[i * 4 + 2] = c[2]; art[i * 4 + 3] = 255; }
+      stats.hidden++;
+    } else { art = new Uint8ClampedArray(w * h * 4); stats.hidden++; }
     let comp = lz4CompressBest(rgbaToRasterForCf(art, w, h, cf));
     if (comp.length > len) { const lit = lz4CompressLiteralsOnly(rgbaToRasterForCf(art, w, h, cf)); if (lit.length < comp.length) comp = lit; }
-    if (comp.length > len) { const empty = lz4CompressBest(rgbaToRasterForCf(new Uint8ClampedArray(w * h * 4), w, h, cf)); if (empty.length <= len) comp = empty; else { stats.skip++; continue; } }
+    if (comp.length > len) { stats.skip++; continue; }
     writeU32le(out, off + 4, comp.length); out.set(comp, off + 8);
     for (let b = off + 8 + comp.length; b < off + 8 + len; b++) out[b] = 0;
   }

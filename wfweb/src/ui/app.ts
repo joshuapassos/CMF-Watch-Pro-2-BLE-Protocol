@@ -122,9 +122,9 @@ export class App {
 
   /** Catálogo de templates (bases boas p/ re-skin in-place), servidos de /templates. */
   private static readonly TEMPLATES: Array<{ id: string; name: string; style: string }> = [
-    { id: "290", name: "Aurora", style: "Fundo em gradiente — troque por foto/arte" },
-    { id: "309", name: "Analog", style: "Analógico limpo (ponteiros + gradiente)" },
-    { id: "275", name: "Data", style: "Analógico + complicações (temp/passos)" },
+    { id: "290", name: "Aurora", style: "Canvas em gradiente — troque o fundo por foto/arte" },
+    { id: "309", name: "Ember", style: "Analógico limpo — gradiente vinho + ponteiros" },
+    { id: "275", name: "Midnight", style: "Analógico limpo — gradiente azul + ponteiros" },
   ];
 
   private openTemplateGallery(): void {

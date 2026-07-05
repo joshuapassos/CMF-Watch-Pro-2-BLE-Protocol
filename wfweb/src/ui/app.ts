@@ -37,6 +37,7 @@ export class App {
   private jsonError = $("jsonError");
   private clock = $("clock");
   private statusEl = $("status");
+  private statusMsgEl = $("statusMsg");
 
   constructor() {
     this.wire();
@@ -77,7 +78,7 @@ export class App {
 
   private status(msg: string, kind: "" | "ok" | "err" = ""): void {
     this.statusEl.className = `status ${kind}`;
-    this.statusEl.innerHTML = msg;
+    this.statusMsgEl.innerHTML = msg; // só a mensagem; o badge de build (#build) persiste
   }
 
   // ---- Abrir .bin ----

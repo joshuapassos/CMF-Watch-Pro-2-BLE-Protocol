@@ -33,6 +33,8 @@ jobs:
           cache-dependency-path: wfweb/package-lock.json
       - run: npm ci
       - run: npm run build
+        env:
+          COMMIT_HASH: ${{ github.sha }} # injeta o hash no footer (vite define __COMMIT__)
       - uses: actions/upload-pages-artifact@v3
         with:
           path: wfweb/dist

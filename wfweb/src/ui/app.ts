@@ -449,8 +449,6 @@ export class App {
       ${l.kind === "pointer" ? `<div class="field"><label title="Tamanho do elemento em pixels (nuvem, sol, etc.)">Element px</label><input type="number" id="fMotSize" value="${Math.min(Math.max(l.w, 48), 96)}" min="8" max="200"></div>` : ""}
       ${l.kind === "pointer" ? `<div class="field full"><button class="btn wide" id="fMotImg">🖼 Set element image…</button></div>` : ""}
       <div class="field full"><button class="btn wide" id="fErase">🧽 Erase (keep size)</button></div>
-      <div class="field full"><button class="btn wide" id="fDup">⧉ Duplicate layer</button></div>
-      <div class="field full"><button class="btn wide danger" id="fDelete">🗑 Delete layer</button></div>
     `;
     this.inspBody.innerHTML = "";
     this.inspBody.appendChild(frag);
@@ -621,29 +619,8 @@ export class App {
       this.refreshJson();
       this.status(`Layer "${l.name}" erased — transparent, ${sz}B ≤ ${l.assetLen}B (same footprint → installs).`, "ok");
     });
-    $("fDup").addEventListener("click", () => {
-      if (!this.dial) return;
-      this.pushUndo();
-      // clona o nó comprovado (mesmo asset), desloca +12,+12; export insere via rebuild.
-      // Zera os *Off (apontam pros bytes da FONTE) — o rebuild posiciona o clone via bytes do nó,
-      // e o encodeInPlace não deve reescrever nada da fonte com dados do clone.
-      const clone: Layer = {
-        ...l, x: Math.min(465, l.x + 12), y: Math.min(465, l.y + 12), isClone: true,
-        sourceKey: `${l.assetOff},${l.x},${l.y}`,
-        xOff: undefined, yOff: undefined, pivxOff: undefined, pivyOff: undefined, colorOff: undefined, srcOff: undefined,
-      };
-      this.dial.layers.splice(this.selected + 1, 0, clone);
-      this.selected += 1;
-      this.refreshAll();
-      this.status(`Layer duplicated. Export inserts the new node (rebuild). Replace its image if you want.`, "ok");
-    });
-    $("fDelete").addEventListener("click", () => {
-      this.pushUndo();
-      l.deleted = true;
-      this.selected = -1;
-      this.refreshAll();
-      this.status(`Layer "${l.name}" removed. Export will rebuild the container (Ctrl+Z undoes).`, "ok");
-    });
+    // Duplicate/Delete removidos: edição estrutural NÃO instala neste relógio (o firmware rejeita o
+    // layout reconstruído). Só edições in-place (mover/cor/imagem-no-slot/fonte/dígitos/Erase) ativam.
   }
 
   // ---- Barra de assets ----

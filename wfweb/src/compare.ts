@@ -1,6 +1,6 @@
 // Harness de comparação: renderiza cada .bin do corpus e compara com o PNG oficial (asset).
 // Reusa o pipeline real do app: parseStructured → predecode JPEG → renderAt.
-import { parseStructured } from "./codec/parse.js";
+import { parseStructured, scanAssets } from "./codec/parse.js";
 import { isPhotoDial } from "./codec/encode.js";
 import { renderAt, type JpegCache, type RgbaImage } from "./codec/render.js";
 import { jpegPayloadToRgba } from "./ui/imageutil.js";
@@ -16,14 +16,14 @@ interface Row {
 
 async function predecodeJpegs(dial: ReturnType<typeof parseStructured>): Promise<JpegCache> {
   const cache: JpegCache = new Map();
-  for (const l of dial.layers) {
-    if (l.cf === 1) {
-      try {
-        const payload = dial.raw.subarray(l.assetOff + 8, l.assetOff + 8 + l.assetLen);
-        const data = await jpegPayloadToRgba(payload, l.w, l.h);
-        cache.set(l.assetOff, { w: l.w, h: l.h, data });
-      } catch { /* frame inválido */ }
-    }
+  // Pré-decodifica TODOS os assets cf=1 do pool (não só as camadas): inclui os GLIFOS do atlas de
+  // dígitos JPEG (ex. 285 hora/minuto), que o atlasGlyphs precisa no cache p/ desenhar.
+  for (const [off, cf, w, h, len] of scanAssets(dial.raw)) {
+    if (cf !== 1 || cache.has(off)) continue;
+    try {
+      const payload = dial.raw.subarray(off + 8, off + 8 + len);
+      cache.set(off, { w, h, data: await jpegPayloadToRgba(payload, w, h) });
+    } catch { /* frame inválido */ }
   }
   return cache;
 }
@@ -84,7 +84,7 @@ async function run() {
       const dial = parseStructured(bytes);
       row.layers = dial.layers.length;
       const jpeg = await predecodeJpegs(dial);
-      row.render = renderAt(dial, 10, 10, 0, jpeg); // hora dos thumbnails oficiais (10:10)
+      row.render = renderAt(dial, 10, 12, 30, jpeg); // hora dos thumbnails oficiais (10:12:30 — seg no 6)
       row.asset = await loadAsset(e.id);
       if (row.asset) {
         const d = diff(row.render.data, row.asset);

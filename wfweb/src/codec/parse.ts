@@ -3,7 +3,7 @@ import { u16le, u32le, i16le, i8, hasSeq, matchAt } from "./bytes.js";
 import { lz4Decode, lz4DecodeStrict } from "./lz4.js";
 import { rgb565ToRgb, bppOf, decodedSize } from "./rgb565.js";
 import { mockFromSourceId, pointerRole, digitForSource } from "./mock.js";
-import type { Layer, LayerKind, MockKind, ScannedAsset, StructDial } from "./types.js";
+import type { Layer, LayerKind, MockKind, MetricVariant, ScannedAsset, StructDial } from "./types.js";
 
 const SIG = [0x1f, 0x00, 0x01, 0x00];
 
@@ -86,18 +86,37 @@ function findDelim(bin: Uint8Array, start: number, end: number): number | undefi
   return found;
 }
 
-/** Fim de um record = próximo `61 [01|0a|0b] 00` cujo ptr resolve p/ asset, ou cap. */
+/** Fim de um record = próximo `61|71 [01|0a|0b] 00` cujo ptr resolve p/ asset, ou cap.
+ *  0x71 = img_number (atlas de dígitos, compõe um NÚMERO a partir dos glifos); 0x61 = img (frame do
+ *  sheet indexado por valor). Ambos são frame-tables `[op][count u16][base u32][ids]`. */
 function nextRecordOr(bin: Uint8Array, from: number, cap: number, isAsset: (p: number) => boolean): number {
   const e = Math.min(cap, bin.length);
   let i = from;
   while (i + 7 <= e) {
-    if (bin[i] === 0x61 && (bin[i + 1] === 0x01 || bin[i + 1] === 0x0a || bin[i + 1] === 0x0b) && bin[i + 2] === 0) {
+    if ((bin[i] === 0x61 || bin[i] === 0x71) && (bin[i + 1] === 0x01 || bin[i + 1] === 0x0a || bin[i + 1] === 0x0b) && bin[i + 2] === 0) {
       const ptr = u32le(bin, i + 3);
       if (isAsset(ptr)) return i;
     }
     i += 1;
   }
   return cap;
+}
+
+/** Métrica de um slot de config (325 Metric etc.) por id de fonte — mapa derivado dos RÓTULOS reais
+ *  do corpus (STEPS/KCAL/%/STAND/AQI/KM…), separado do mockFromSourceId global (que difere p/ estes).
+ *  Retorna null p/ fontes que não são métricas de slot (pula variantes irrelevantes). */
+function metricInfo(src: number): { mock: MockKind; label: string } | null {
+  switch (src) {
+    case 0x19: return { mock: "steps", label: "Steps" };
+    case 0x1e: return { mock: "kcal", label: "Kcal" };
+    case 0x24: return { mock: "percent", label: "Goal %" };
+    case 0x48: return { mock: "generic", label: "Stand" };
+    case 0x8b: return { mock: "generic", label: "AQI" };
+    case 0x22: case 0x23: return { mock: "distance", label: "Distance" };
+    case 0x1a: return { mock: "generic", label: "Weather" };
+    case 0x74: case 0x75: return { mock: "bpm", label: "Heart rate" };
+    default: return null;
+  }
 }
 
 function mkLayer(partial: Partial<Layer> & Pick<Layer, "kind" | "name" | "cf" | "w" | "h" | "assetOff" | "assetLen">): Layer {
@@ -203,8 +222,11 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
         walk(body, body + ln, ox, oy, inGroup, true);
       } else if (tag === 0x68) {
         // GRUPO (SDK sty_group_t): filhos posicionais distribuídos pelo firmware (spec 25 §6/§7).
-        // Não emitimos como drawables (regride 357/376 — colidem com sprites top-level). Recursa só.
-        walk(body, body + ln, ox, oy, true, aod);
+        // Não emitimos os filhos-imagem como drawables (regride 357/376). Mas os ARCOS 0x81 dentro do
+        // grupo herdam a ORIGEM do grupo (rect X,Y em body+3/+5) — sem isso o arco lê seu próprio X=0
+        // e cai no canto esq. (ex. 304: kcal @grupo(67,276) e bateria @(242,276) colidiam em (0,276)).
+        const gX = u16le(bin, body + 3), gY = u16le(bin, body + 5);
+        walk(body, body + ln, gX, gY, true, aod);
       } else if (tag === 0x81 && ln >= 12 && bin[body] === 0x01) {
         // ANEL DE PROGRESSO (spec 25 §2 revisado pelo RE do 322): 0x81 = 1 disco cf5 (count=1)
         // recortado num SETOR em runtime (frac=valor/max, horário das 12h). NÃO é frame-sheet.
@@ -216,6 +238,9 @@ export function scanSceneDrawables(bin: Uint8Array, isAsset: (p: number) => bool
         let ay = u16le(bin, c + 2);
         const aw = u16le(bin, c + 4);
         const ah = u16le(bin, c + 6);
+        // Arco DENTRO de grupo: o offset dentro do grupo é 0 (arco = tamanho do grupo) → usa a origem
+        // do grupo herdada em (ox,oy). Sem isso vários arcos do mesmo dial colapsam em (0,y) e deduplicam.
+        if (inGroup) { if (ax === 0) ax = ox; if (ay === 0) ay = oy; }
         const ftbl = findFrameTable(bin, body, c1len + 3, isAsset);
         // Forma PURA-COMPACTA (371/364/366/372, RE 02/07): SEM frame-table — é um arco VETORIAL de
         // cor sólida (não disco texturizado). Assinatura `01 ff` em content+11..12; cor RGB em
@@ -436,6 +461,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
   // 2) Pré-scan de NÓS DE GRUPO `68 [id] 00 48 15 00 [X][Y][W][H]`.
   const placed = new Set<string>();
   const placedAod = new Set<string>(); // dedup separado p/ registros da variante AOD (0x22)
+  const srcStack = new Set<string>(); // dedup de STACK de variantes de estilo por (ptr,fonte,aod)
   const groups: Array<[number, number, number, number, number]> = []; // [offset,x,y,w,h]
   {
     let g = 0x30;
@@ -464,7 +490,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
       const len = u16le(bin, gr[0] + 1);
       return o >= gr[0] + 3 && o < gr[0] + 3 + len;
     });
-  const digitGroups = new Map<number, Array<[number, number]>>(); // gk -> [(source, ptr)]
+  const digitGroups = new Map<number, Array<[number, number, number, number, number]>>(); // gk -> [(src, ptr, relX, relY, cnt)]
 
   const isAsset = (p: number) => assetMap.has(p);
 
@@ -606,10 +632,18 @@ export function parseStructured(bin: Uint8Array): StructDial {
         if (sheetMock === "none") continue;
       }
       if (d.tag !== 0x70 && bgFrameSet.has(d.assetOff)) continue; // variante do fundo
-      // dedupe por rect: nós irmãos = variantes (normal/AOD/estilo) do MESMO elemento.
-      // (NB: dedup por fonte p/ separar as 3 mãos foi testado e REGREDIU — no 371 as 3 mãos
-      // reusam UM sprite longo de 466px; desenhar 3 mãos longas idênticas fica pior que 1.)
-      const key = `${d.tag},${d.x},${d.y},${w},${h},${d.aod ? "a" : "n"}`;
+      // dedupe por rect: nós irmãos = variantes (normal/AOD/estilo) do MESMO elemento. EXCEÇÃO:
+      // PONTEIROS (0x70) com FONTES distintas são mãos diferentes (hora/min/seg) — no mesmo rect e
+      // pivô central, mas com SPRITES próprios (371 ActiveTrio: 0xc566 len129 / 0xec65 len169 /
+      // 0x11927 len221, girando em ângulos h/m/s). Incluir a fonte no key p/ não colapsar as 3.
+      // AM/PM em LINHA de variantes de layout: o MESMO sheet ampm aparece em vários x (config escolhe
+      // a posição; ex. 298 Eclectic 4× em x=97/139/181/223 → "AM" sobreposto). Colapsa por asset →
+      // fica só o 1º (esquerdo, = o do thumbnail). Ponteiros: fonte no key (mãos h/m/s distintas).
+      const key = d.tag === 0x70
+        ? `${d.tag},${d.x},${d.y},${w},${h},${d.aod ? "a" : "n"},${d.sourceId ?? "?"}`
+        : sheetMock === "ampm"
+        ? `ampm,${d.assetOff},${d.aod ? "a" : "n"}`
+        : `${d.tag},${d.x},${d.y},${w},${h},${d.aod ? "a" : "n"}`;
       if (placed.has(key)) continue;
       placed.add(key);
       const kind: LayerKind = d.tag === 0x70 ? "pointer" : "image";
@@ -633,10 +667,55 @@ export function parseStructured(bin: Uint8Array): StructDial {
     }
   }
 
+  // Último frame-sheet emitido (dia-da-semana/mês) p/ o FLUXO da âncora 0x80: um campo ancorado
+  // (ex. 364 "09") é posicionado logo à direita do irmão anterior. Rastreado por modo (normal/AOD).
+  let lastFlowN: { x: number; y: number; w: number } | undefined;
+  let lastFlowA: { x: number; y: number; w: number } | undefined;
   let i = 0x30;
   while (i + 8 < firstAsset) {
     const recAod = inAod(i); // registro na variante ALWAYS-ON (0x22): marcado aod, oculto no preview normal
-    if (bin[i] === 0x61 && (bin[i + 1] === 0x01 || bin[i + 1] === 0x0a || bin[i + 1] === 0x0b) && bin[i + 2] === 0) {
+    // FRAME-SHEET indexado por valor (dia-da-semana `61 07`=7 frames src 0x18; mês `61 0c`=12). O scan
+    // principal só entra em count 01/0a/0b, e o scanSceneDrawables pula 0x60/0x30-em-grupo → esses
+    // sheets sumiam (359/364 "TUE"). DENTRO de grupo → coleta como filho (pos relativa) p/ o painel
+    // multi-campo; STANDALONE (wrap 0x60) → emite imagem frameSheet na pos inline.
+    if ((bin[i] === 0x61 || bin[i] === 0x71) && bin[i + 2] === 0 && i >= 24
+        && (bin[i - 24] === 0x60 || bin[i - 24] === 0x30) && (bin[i + 1] === 0x07 || bin[i + 1] === 0x0c)) {
+      const cnt = u16le(bin, i + 1);
+      const ptr = u32le(bin, i + 3);
+      const asset = assetMap.get(ptr);
+      const src = bin[i - 5];
+      if (inGroupBody(i)) {
+        const gk = groupOf(i);
+        if (gk !== undefined && asset && src >= 1 && src <= 0x8d) {
+          const arr = digitGroups.get(gk) ?? [];
+          arr.push([src, ptr, u16le(bin, i - 18), u16le(bin, i - 16), cnt]);
+          digitGroups.set(gk, arr);
+        }
+        i += 1;
+        continue;
+      }
+      const sx = u16le(bin, i - 18), sy = u16le(bin, i - 16);
+      if (bin[i - 24] === 0x60 && asset && !usedAssets.has(ptr) && src >= 1 && src <= 0x8d && sx <= 466 && sy <= 466) {
+        let sm = mockFromSourceId(src);
+        if (cnt === 7 && sm === "none") sm = "weekday";
+        const key = `sheet,${ptr},${sx},${sy},${recAod ? "a" : "n"}`;
+        if (sm !== "none" && !placed.has(key)) {
+          placed.add(key);
+          const [cf, w, h, alen] = asset;
+          layers.push(mkLayer({
+            kind: "image", name: `${sm} (sheet ${idx})`,
+            cf, w, h, assetOff: ptr, assetLen: alen,
+            x: sx, y: sy, mock: sm, sourceId: src, srcOff: i - 5, frames: cnt,
+            aod: recAod || undefined,
+          }));
+          idx += 1;
+          if (recAod) lastFlowA = { x: sx, y: sy, w }; else lastFlowN = { x: sx, y: sy, w };
+        }
+      }
+      i += 1;
+      continue;
+    }
+    if ((bin[i] === 0x61 || bin[i] === 0x71) && (bin[i + 1] === 0x01 || bin[i + 1] === 0x0a || bin[i + 1] === 0x0b) && bin[i + 2] === 0) {
       const ptr = u32le(bin, i + 3);
       const asset = assetMap.get(ptr);
       if (asset) {
@@ -651,7 +730,7 @@ export function parseStructured(bin: Uint8Array): StructDial {
             const gk = groupOf(i);
             if (gk !== undefined) {
               const arr = digitGroups.get(gk) ?? [];
-              arr.push([s, ptr]);
+              arr.push([s, ptr, u16le(bin, i - 18), u16le(bin, i - 16), u16le(bin, i + 1)]);
               digitGroups.set(gk, arr);
             }
           }
@@ -757,7 +836,21 @@ export function parseStructured(bin: Uint8Array): StructDial {
           || sourceId === 0x70 || sourceId === 0x71 || sourceId === 0x72;
         const imgNumOffByOne = bin[i + 1] === 0x0a && bin[i - 24] === 0x60 && precAttr
           && (sourceId === 0 || fwdPointer) && imgX >= 1 && imgX <= 466 && imgY >= 1 && imgY <= 466;
-        if (kind === "text" && (cf13Colored || (sourceId === undefined && precAttr) || imgNumOffByOne)) {
+        // Caso geral do off-by-one: no wrapper 0x60 a fonte inline (i-5) é a AUTORITATIVA. Quando o
+        // forward achou uma fonte DIFERENTE dela, ele leu o attr do vizinho (ex. 359: a HORA lia X/Y
+        // e fonte 0x0b do MINUTO adjacente → colidia e sumia por dedup). inlineSrc≠forward ⇒ forward
+        // errou ⇒ usa inline. Se o forward tivesse acertado, seriam iguais → este ramo é no-op.
+        const inlineSrc = bin[i - 5];
+        const inlineMismatch = bin[i + 1] === 0x0a && bin[i - 24] === 0x60 && precAttr
+          && inlineSrc >= 1 && inlineSrc <= 0x8d && inlineSrc !== sourceId
+          && imgX >= 1 && imgX <= 466 && imgY >= 1 && imgY <= 466;
+        // Os 3 casos de img_number (undefined+precAttr, off-by-one, inlineMismatch) são wrappers 0x60
+        // que SÃO texto — mesmo quando o forward falhou em achar posição válida e kind ficou "other"
+        // (ex. 334 minuto: forward leu o attr do vizinho fora da tela → kind="other" → sumia). Promove
+        // p/ "text". cf13Colored só tinge um texto já existente (não promove).
+        const imgCorrection = (sourceId === undefined && precAttr) || imgNumOffByOne || inlineMismatch;
+        if ((imgCorrection && kind !== "pointer" && kind !== "image") || (kind === "text" && cf13Colored)) {
+          if (imgCorrection) kind = "text";
           x = u16le(bin, i - 18);
           y = u16le(bin, i - 16);
           // Reaponta os offsets de escrita p/ o X/Y REAL (i-18/i-16). Sem isso, xOff/yOff ficavam na
@@ -790,6 +883,30 @@ export function parseStructured(bin: Uint8Array): StructDial {
           if (sourceId !== undefined) srcOff = i - 5;
         }
 
+        // Elemento ANCORADO não-posicionável: forma `0x60` com âncora `0x80` (i-13), cuja fonte INLINE
+        // (i-5) é válida mas DIFERE da que o forward achou (⇒ off-by-one pegou o vizinho) E o inline
+        // NÃO dá posição (imgX/Y=0, âncora ainda não RE-ada). Sem isso o forward transformava o "09"
+        // do 364 num "10" vermelho espúrio sobre o relógio. Melhor não desenhar do que desenhar errado.
+        // (Records com inline utilizável já foram tratados por imgCorrection acima.) TODO: RE âncora 0x80.
+        const anchoredUnplaceable = bin[i - 24] === 0x60 && bin[i - 13] === 0x80 && !imgCorrection
+          && inlineSrc >= 1 && inlineSrc <= 0x8d && inlineSrc !== sourceId && !(imgX >= 1 && imgY >= 1);
+        if (anchoredUnplaceable) {
+          // Âncora 0x80 = FLUXO após o irmão anterior (sheet de dia-da-semana). Posiciona o campo
+          // (ex. 364 "09") logo à direita dele + offset inline (imgX/imgY). Fonte real = inline (i-5).
+          const flow = recAod ? lastFlowA : lastFlowN;
+          if (flow) {
+            kind = "text";
+            x = flow.x + flow.w + imgX;
+            y = flow.y + imgY;
+            xOff = undefined; yOff = undefined;
+            sourceId = inlineSrc;
+            mock = mockFromSourceId(inlineSrc);
+            srcOff = i - 5;
+          } else {
+            i += 1;
+            continue;
+          }
+        }
         // Em sceneMode, imagens/ponteiros (normais E AOD) vêm da cena TLV; o scan plano só contribui
         // TEXTO (normal e AOD). Assim os ponteiros AOD parseiam pelo caminho TLV robusto (walker de 0x22).
         if (sceneMode && kind !== "text") {
@@ -806,6 +923,15 @@ export function parseStructured(bin: Uint8Array): StructDial {
             continue;
           }
           dedup.add(key);
+        }
+        // Stack de VARIANTES de estilo: o MESMO campo (mesmo atlas+fonte) aparece 2× em posições
+        // próximas (ex. 323 duas horas @y163/191). O arquivo não marca qual está ativa → emitir todas
+        // dobra os dígitos na tela. Mantém só a 1ª por (ptr,fonte). Fontes distintas (hora vs minuto
+        // no mesmo atlas, ex. 359/362) NÃO colidem; dígitos decompostos (0x08/0x09/0x0c/0x0d) idem.
+        if (kind === "text" && sourceId !== undefined) {
+          const sk = `${ptr},${sourceId},${recAod ? "a" : "n"}`;
+          if (srcStack.has(sk)) { i += 1; continue; }
+          srcStack.add(sk);
         }
         const kname =
           kind === "pointer" ? `Pointer ${idx}`
@@ -862,28 +988,134 @@ export function parseStructured(bin: Uint8Array): StructDial {
     const k = `${gr[3]}x${gr[4]}`;
     sizeHist.set(k, (sizeHist.get(k) ?? 0) + 1);
   }
+  // LINHA de variantes de LAYOUT: ≥8 grupos do mesmo tamanho, TODOS no mesmo Y, com fonte ÚNICA — a
+  // config escolhe a POSIÇÃO horizontal (ex. 298 hora em x=186/228/270/312 @y=90). Mostra o da
+  // ESQUERDA (variante 0 = a do thumbnail). Difere de matriz (varia x E y) e slider (varia y).
+  const rowLeftmost = new Set<number>();
+  {
+    const bySize = new Map<string, number[]>();
+    for (const gk of gks) {
+      const gr = groups[gk];
+      if ((sizeHist.get(`${gr[3]}x${gr[4]}`) ?? 0) < 8) continue;
+      const k = `${gr[3]}x${gr[4]}`; const a = bySize.get(k) ?? []; a.push(gk); bySize.set(k, a);
+    }
+    for (const [, list] of bySize) {
+      if (new Set(list.map((gk) => groups[gk][2])).size > 1) continue; // varia Y → não é linha
+      const srcs = new Set<number>();
+      for (const gk of list) for (const kid of (digitGroups.get(gk) ?? [])) if (kid[0] >= 1) srcs.add(kid[0]);
+      if (srcs.size !== 1) continue;
+      let best: number | undefined, bestX = Infinity;
+      for (const gk of list) { if (inAod(groups[gk][0])) continue; if (groups[gk][1] < bestX) { bestX = groups[gk][1]; best = gk; } }
+      if (best !== undefined) rowLeftmost.add(best);
+    }
+  }
   const gplaced = new Set<string>();
   for (const gk of gks) {
     const gr = groups[gk];
-    if ((sizeHist.get(`${gr[3]}x${gr[4]}`) ?? 0) >= 8) continue; // célula de matriz / pilha multi-variante → não emite
+    if ((sizeHist.get(`${gr[3]}x${gr[4]}`) ?? 0) >= 8 && !rowLeftmost.has(gk)) continue; // matriz/slider/pilha → suprime (exceto o esquerdo de uma linha de variantes de layout, ex. 298 hora)
     const kids = digitGroups.get(gk)!;
     if (kids.length === 0) continue;
     const [src0, ptr] = kids[0];
     const [, gx, gy, gw, gh] = groups[gk];
     const has = (lo: number, hi: number) => kids.some(([s]) => s >= lo && s <= hi);
     const isClock = has(0x01, 0x09) && has(0x0b, 0x0d);
-    const mock: MockKind = isClock ? "time" : mockFromSourceId(src0);
+    // Relógio COM segundos: um filho de fonte de segundos (0x0f second, 0x10/0x11 tens/units) →
+    // renderiza HH:MM:SS (ex. 325 Metric "10:12:30"). Sem isso saía só HH:MM.
+    const hasSec = has(0x0f, 0x11);
+    const mock: MockKind = isClock ? (hasSec ? "timeSec" : "time") : mockFromSourceId(src0);
     if (mock === "none") continue;
     const gkey = `${gx},${gy}`;
     if (gplaced.has(gkey)) continue;
     gplaced.add(gkey);
+    const galign = bin[gr[0] + 14];
+    // PAINEL MULTI-CAMPO: grupo NÃO-relógio com fontes distintas EMPILHADAS (relY diferentes, ex. 366
+    // dia-da-semana@41 + data@83). Emite CADA filho na sua pos relativa (gy+relY), centralizado no
+    // grupo pelo align. (Pilhas de VARIANTE — 275 tudo em relY=0 — NÃO empilham → caem no layer único.)
+    const distinctSrc = new Set(kids.map((k) => k[0]));
+    const distinctY = new Set(kids.map((k) => k[3]));
+    if (!isClock && distinctSrc.size >= 2 && distinctY.size >= 2) {
+      const seen = new Set<number>();
+      for (const [s, cptr, , crelY, ccnt] of kids) {
+        if (seen.has(s)) continue;
+        seen.add(s);
+        const cm: MockKind = ccnt === 7 ? "weekday" : mockFromSourceId(s);
+        if (cm === "none") continue;
+        const ca = assetMap.get(cptr);
+        if (!ca) continue;
+        const [ccf, cw, ch, clen] = ca;
+        const isSheet = ccnt === 7 || ccnt === 12;
+        layers.push(mkLayer({
+          kind: isSheet ? "image" : "text",
+          name: `${cm} (group)`,
+          cf: ccf, w: cw, h: ch, assetOff: cptr, assetLen: clen,
+          x: isSheet ? gx + Math.round((gw - cw) / 2) : gx,
+          y: gy + crelY,
+          mock: cm, sourceId: s, frames: isSheet ? ccnt : undefined,
+          boxW: isSheet ? undefined : gw, boxH: isSheet ? undefined : ch, boxAlign: isSheet ? undefined : galign,
+        }));
+        idx += 1;
+      }
+      continue;
+    }
     const a = assetMap.get(ptr) ?? [5, gw, gh, 0];
     layers.push(mkLayer({
       kind: "text",
       name: isClock ? "Clock (group)" : `${mock} (group)`,
       cf: a[0], w: a[1], h: a[2], assetOff: ptr, assetLen: a[3],
-      x: gx, y: gy, mock, sourceId: src0,
+      x: gx, y: gy, mock, sourceId: src0, boxW: gw, boxH: gh, boxAlign: galign,
     }));
+  }
+
+  // SLOTS DE MÉTRICA (só-preview): rects com ≥2 grupos-variante SOBREPOSTOS (mesma x,y,w,h) = um slot
+  // cuja métrica ativa é config do aparelho (não está no .bin). Emite UM layer editável por slot com a
+  // lista de opções; o render mostra `metricSel` (valor mock + rótulo). Só-preview: não instala.
+  // (Grade/matriz e slider ficam de fora: seus grupos estão em posições DIFERENTES → 1 por rect.)
+  {
+    const byRect = new Map<string, number[]>();
+    for (const gk of gks) {
+      const gr = groups[gk];
+      if ((sizeHist.get(`${gr[3]}x${gr[4]}`) ?? 0) < 8) continue; // só os suprimidos
+      const rk = `${gr[1]},${gr[2]},${gr[3]},${gr[4]}`;
+      const arr = byRect.get(rk) ?? []; arr.push(gk); byRect.set(rk, arr);
+    }
+    let slotIdx = 0;
+    for (const [, list] of byRect) {
+      if (list.length < 2) continue; // 1 grupo por rect = matriz/slider, não é slot de variantes
+      const gr0 = groups[list[0]];
+      const [goff, gx, gy, gw, gh] = gr0;
+      const variants: MetricVariant[] = [];
+      const seenSrc = new Set<number>();
+      let atlasOff = -1, atlasA: [number, number, number, number] | undefined;
+      for (const gk of list) {
+        const kids = digitGroups.get(gk) ?? [];
+        const metricKids = kids.filter((k) => k[4] >= 10 && k[0] >= 1 && k[0] <= 0x8d); // img_number métrica
+        if (metricKids.length !== 1) continue; // pula o composto (multi-métrica)
+        const [msrc, mptr] = metricKids[0];
+        if (seenSrc.has(msrc)) continue;
+        const info = metricInfo(msrc);
+        if (!info) continue;
+        seenSrc.add(msrc);
+        if (atlasOff < 0) { atlasOff = mptr; atlasA = assetMap.get(mptr); }
+        const unit = kids.find((k) => k[0] === 0 && k[4] === 1); // rótulo (imagem única)
+        const ua = unit ? assetMap.get(unit[1]) : undefined;
+        variants.push({
+          sourceId: msrc, mock: info.mock, label: info.label,
+          unitOff: unit?.[1], unitCf: ua?.[0], unitW: ua?.[1], unitH: ua?.[2], unitLen: ua?.[3],
+        });
+      }
+      if (variants.length < 2 || !atlasA) continue;
+      // default: uma métrica COM valor (não-genérica) e distinta por slot → preview variado e legível.
+      const good = variants.map((_, k) => k).filter((k) => variants[k].mock !== "generic");
+      const sel = good.length ? good[slotIdx % good.length] : 0;
+      layers.push(mkLayer({
+        kind: "text", name: `Metric slot ${slotIdx}`,
+        cf: atlasA[0], w: atlasA[1], h: atlasA[2], assetOff: atlasOff, assetLen: atlasA[3],
+        x: gx, y: gy, boxW: gw, boxH: gh, boxAlign: bin[goff + 14],
+        mock: variants[sel].mock, sourceId: variants[sel].sourceId,
+        metricVariants: variants, metricSel: sel,
+      }));
+      slotIdx += 1;
+    }
   }
 
   // FALLBACK: texto sem fonte → o maior perto do centro vira Time; os demais Generic.

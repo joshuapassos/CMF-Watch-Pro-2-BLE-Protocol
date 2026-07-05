@@ -1,6 +1,6 @@
 // App do editor — estado central + wiring dos painéis (camadas, inspector, notação, assets, canvas).
 import "./styles.css";
-import { parseStructured, setAod } from "../codec/parse.js";
+import { parseStructured, setAod, scanAssets } from "../codec/parse.js";
 import { renderAt, decodeLayer, type JpegCache } from "../codec/render.js";
 import { encodeInPlace, setLayerImageRaster, isPhotoDial, buildPhotoDial, FULL_DIM, THUMB_DIM } from "../codec/encode.js";
 import { buildNotation, applyNotation } from "../codec/notation.js";
@@ -185,6 +185,15 @@ export class App {
           /* frame JPEG inválido — ignora */
         }
       }
+    }
+    // GLIFOS de atlas JPEG (cf=1) não são camadas → varre o pool inteiro p/ cachear o que faltou
+    // (ex. 285 usa um atlas de dígitos JPEG p/ hora/minuto; sem isso os "10"/"12" saíam vazios).
+    for (const [off, cf, w, h, len] of scanAssets(this.dial.raw)) {
+      if (cf !== 1 || this.jpegCache.has(off)) continue;
+      try {
+        const payload = this.dial.raw.subarray(off + 8, off + 8 + len);
+        this.jpegCache.set(off, { w, h, data: await jpegPayloadToRgba(payload, w, h) });
+      } catch { /* inválido */ }
     }
   }
 
@@ -420,7 +429,9 @@ export class App {
       ${resizable ? `<div class="field"><label>H</label><input type="number" id="fH" value="${l.h}" min="1" max="466"></div>` : ""}
       <div class="field"><label>Pivot X</label><input type="number" id="fPX" value="${l.pivotX}" ${pivotable ? "" : "disabled"}></div>
       <div class="field"><label>Pivot Y</label><input type="number" id="fPY" value="${l.pivotY}" ${pivotable ? "" : "disabled"}></div>
-      ${isDataBound ? `<div class="field"><label>Source${persistNote}</label><select id="fSrc"></select></div>` : ""}
+      ${l.metricVariants ? `<div class="field"><label title="Qual métrica este slot mostra. PREVIEW ONLY — no relógio real a métrica ativa é definida pela config do aparelho, não pelo arquivo.">Metric (preview)</label><select id="fMetric"></select></div>` : ""}
+      ${l.metricVariants ? `<div class="field note">Slot de métrica: o relógio preenche pela config do aparelho. Esta escolha é só p/ visualizar o dial no editor.</div>` : ""}
+      ${isDataBound && !l.metricVariants ? `<div class="field"><label>Source${persistNote}</label><select id="fSrc"></select></div>` : ""}
       ${isDataBound && l.srcOff !== undefined ? `<div class="field"><label title="Bind to ANY firmware getter id (0x00–0x8d), even ones not in the list — for sweeping/finding the right data channel.">Source id (raw)</label><input type="number" id="fSrcRaw" value="${l.sourceId ?? 0}" min="0" max="141"></div>` : ""}
       ${hasColor ? `<div class="field"><label>Color${l.colorOff === undefined ? " (preview only)" : ""}</label><input type="color" id="fColor" value="${hex}"></div>` : ""}
       ${isArc ? `<div class="field"><label>Max (ring)</label><input type="number" id="fMax" value="${l.arcMax ?? 100}"></div>` : ""}
@@ -452,8 +463,24 @@ export class App {
       mockSel.appendChild(opt);
     }
 
+    // Slot de métrica (só-preview): dropdown troca a variante mostrada (metricSel) e re-renderiza.
+    if (l.metricVariants) {
+      const mSel = $<HTMLSelectElement>("fMetric");
+      l.metricVariants.forEach((v, k) => {
+        const opt = document.createElement("option");
+        opt.value = String(k);
+        opt.textContent = v.label;
+        if (k === (l.metricSel ?? 0)) opt.selected = true;
+        mSel.appendChild(opt);
+      });
+      mSel.addEventListener("change", () => {
+        l.metricSel = parseInt(mSel.value, 10) || 0;
+        this.render();
+      });
+    }
+
     // Fonte de dado real (enum do firmware) — escreve sourceId (persistido no export via srcOff).
-    if (isDataBound) {
+    if (isDataBound && !l.metricVariants) {
       const srcSel = $<HTMLSelectElement>("fSrc");
       // Se o campo usa um id que não está no catálogo, mostra-o como opção "(atual)" p/ não parecer
       // que está setado no primeiro item da lista.

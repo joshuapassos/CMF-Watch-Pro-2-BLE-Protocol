@@ -33,6 +33,7 @@ export function mockSample(kind: MockKind, hh: number, mm: number, ss: number): 
   switch (kind) {
     case "none": return null;
     case "time": return `${pad2(hh % 24)}:${pad2(mm)}`;
+    case "timeSec": return `${pad2(hh % 24)}:${pad2(mm)}:${pad2(ss)}`;
     case "hour": return pad2(hh % 24);
     case "minute": return pad2(mm);
     case "seconds": return pad2(ss);
@@ -53,7 +54,7 @@ export function mockSample(kind: MockKind, hh: number, mm: number, ss: number): 
 /** Rótulo curto p/ o dropdown do inspector. */
 export function mockLabel(kind: MockKind): string {
   const m: Record<MockKind, string> = {
-    none: "None", time: "Clock", hour: "Hour", minute: "Minute", seconds: "Seconds",
+    none: "None", time: "Clock", timeSec: "Clock+sec", hour: "Hour", minute: "Minute", seconds: "Seconds",
     ampm: "AM/PM", date: "Date", weekday: "Weekday", steps: "Steps", kcal: "Kcal", bpm: "BPM",
     battery: "Battery", temp: "Temp", distance: "Distance", percent: "Goal %", generic: "Generic",
   };

@@ -36,7 +36,7 @@ export function decodeLayer(dial: StructDial, layer: Layer, jpeg?: JpegCache): R
 /** Glifos do atlas cujo "0" está em `baseOff`: assets cf/w/h consecutivos = 0123456789(+pontuação).
  *  `over` (opcional) = frames re-skinados (frameSheet): se o offset do frame casa, decodifica o
  *  payload novo em vez do asset do `raw` — pro preview refletir o re-skin. */
-export function atlasGlyphs(dial: StructDial, baseOff: number, max: number, over?: { offsets: number[]; payloads: (Uint8Array | null)[] }): RgbaImage[] {
+export function atlasGlyphs(dial: StructDial, baseOff: number, max: number, over?: { offsets: number[]; payloads: (Uint8Array | null)[] }, jpeg?: JpegCache): RgbaImage[] {
   const assets = scanAssets(dial.raw).sort((a, b) => a[0] - b[0]);
   const start = assets.findIndex((a) => a[0] === baseOff);
   if (start < 0) return [];
@@ -53,7 +53,7 @@ export function atlasGlyphs(dial: StructDial, baseOff: number, max: number, over
       kind: "image", name: "", cf, w, h, assetOff: off, assetLen: len,
       x: 0, y: 0, pivotX: 0, pivotY: 0, visible: true, mock: "none", newPayload,
     };
-    out.push(decodeLayer(dial, ly));
+    out.push(decodeLayer(dial, ly, jpeg));
   }
   return out;
 }
@@ -265,7 +265,7 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
       const over = layer.newFramePayloads && layer.frameOffsets
         ? { offsets: layer.frameOffsets, payloads: layer.newFramePayloads }
         : undefined;
-      const frames = atlasGlyphs(dial, layer.assetOff, layer.frames, over);
+      const frames = atlasGlyphs(dial, layer.assetOff, layer.frames, over, jpeg);
       img = frames[Math.min(idx, frames.length - 1)] ?? decodeLayer(dial, layer, jpeg);
     } else {
       img = decodeLayer(dial, layer, jpeg);
@@ -312,6 +312,7 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
   // TEXTO/NÚMERO: desenha o valor-mock com os glifos reais do atlas.
   for (const l of dial.layers) {
     if (!l.visible || l.deleted || l.kind !== "text") continue;
+    if (l.metricVariants) continue; // slot de métrica → loop dedicado abaixo
     if (hideForMode(l)) continue;
     // Fonte de dígito ÚNICO (tens/units, spec 25 §1.1) → um dígito; senão o valor-mock inteiro.
     const single = l.sourceId !== undefined ? digitForSource(l.sourceId, hh, mm, ss) : null;
@@ -326,7 +327,7 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
         s = l.digitZeroPad ? String(clamped).padStart(l.digitCount, "0") : String(clamped);
       }
     }
-    const glyphs = atlasGlyphs(dial, l.assetOff, 12);
+    const glyphs = atlasGlyphs(dial, l.assetOff, 12, undefined, jpeg);
     if (glyphs.length < 10) continue;
     // cf=13 = máscara A8 (RGB branco, alpha=mask); o firmware pinta com a cor do elemento.
     if (l.cf === 13 && l.color) {
@@ -350,15 +351,35 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
     const gw = glyphs[0].w;
     const widths: Array<[number, number]> = [];
     for (let d = 0; d < glyphs.length; d++) widths.push(bbox(glyphs[d]));
-    const spans = widths.slice(0, 10).map(([lo, hi]) => hi - lo);
-    const proportional = Math.max(...spans) - Math.min(...spans) > gw / 6;
+    // Proporcional = as CÉLULAS dos glifos têm larguras diferentes (atlas de arte, ex. 284). Fontes
+    // monoespaçadas têm célula uniforme (ex. 359: todas 60px) mas TINTA variável ("1" fino) — usar a
+    // variância da TINTA marcava-as como proporcionais e compactava "10", abrindo um vão até o ":".
+    const cellWidths = glyphs.slice(0, 10).map((g) => g.w);
+    const proportional = Math.max(...cellWidths) - Math.min(...cellWidths) > gw / 6;
     const gap = Math.max(gw >> 3, 1);
     // Largura do rect do img_number: o firmware distribui os N dígitos ao longo dela. rectW>0 →
     // um slot por dígito (espalha 3+ dígitos); rectW=0 → avanço por largura de glifo (comportamento
     // padrão). Espelha o que a edição de "Digits width" vai fazer no relógio.
     const slotW = l.rectW && l.rectW > 0 && !proportional ? l.rectW / digits.length : 0;
+    // Grupo 0x68 (sty_group_t): quando a caixa é JUSTA (contém só este número), o firmware centraliza
+    // o conteúdo nela (nos dois eixos). Caixas LARGAS (boxW ≫ conteúdo) contêm um relógio inteiro
+    // "HH:MM" mas só o campo hora é modelado — aí NÃO centralizar, senão o "10" pula pro meio, sobre
+    // o ":MM" (ex.: 363/375). 281 é caixa justa → centra e corrige o "10" (saía no canto sup-esq).
     let cx = l.x;
-    const top = l.y;
+    let top = l.y;
+    if (l.boxW && l.boxH) {
+      // Alinhamento do GRUPO 0x68 pela grade 3×3 do byte `boxAlign` (group+14, estilo LVGL — confirmado
+      // no corpus): substitui a heurística de "caixa justa". Col H: centro{0x02,0x05,0x0a}
+      // dir{0x03,0x06,0x0b} esq{resto}. Lin V: meio{0x07..0x0b} base{0x04,0x05,0x06} topo{resto}.
+      const contentW = slotW > 0 ? digits.length * slotW
+        : proportional ? digits.reduce((s, d) => s + (widths[d][1] - widths[d][0]) + gap, 0) - gap
+        : digits.length * gw;
+      const al = l.boxAlign ?? 0x0a;
+      if (al === 0x02 || al === 0x05 || al === 0x0a) cx = l.x + Math.round((l.boxW - contentW) / 2);
+      else if (al === 0x03 || al === 0x06 || al === 0x0b) cx = l.x + (l.boxW - contentW);
+      if (al >= 0x07 && al <= 0x0b) top = l.y + Math.round((l.boxH - l.h) / 2);
+      else if (al === 0x04 || al === 0x05 || al === 0x06) top = l.y + (l.boxH - l.h);
+    }
     let slot = 0;
     for (const d of digits) {
       const g = glyphs[d];
@@ -378,6 +399,41 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
         cx += gw;
       }
     }
+  }
+
+  // SLOTS DE MÉTRICA (só-preview): valor da variante selecionada (dígitos do atlas) + rótulo (imagem),
+  // alinhados na caixa pelo boxAlign. A métrica ativa real é config do aparelho; isto é visualização.
+  for (const l of dial.layers) {
+    if (!l.visible || l.deleted || !l.metricVariants || !l.metricVariants.length) continue;
+    if (hideForMode(l)) continue;
+    const v = l.metricVariants[Math.min(l.metricSel ?? 0, l.metricVariants.length - 1)];
+    const raw = (digitForSource(v.sourceId, hh, mm, ss) ?? mockSample(v.mock, hh, mm, ss));
+    if (raw === null) continue;
+    const glyphs = atlasGlyphs(dial, l.assetOff, 12, undefined, jpeg);
+    if (glyphs.length < 10) continue;
+    const gw = glyphs[0].w;
+    const digs: number[] = [];
+    for (const c of raw) { const d = c.charCodeAt(0) - 48; if (d >= 0 && d <= 9) digs.push(d); }
+    if (!digs.length) continue;
+    let unit: RgbaImage | null = null;
+    if (v.unitOff !== undefined && v.unitCf !== undefined && v.unitW && v.unitH) {
+      try {
+        const payload = dial.raw.subarray(v.unitOff + 8, v.unitOff + 8 + (v.unitLen ?? 0));
+        unit = { w: v.unitW, h: v.unitH, data: decodeAssetToRgba(payload, v.unitCf, v.unitW, v.unitH) };
+      } catch { /* rótulo inválido */ }
+    }
+    const gap = Math.max(6, gw >> 2);
+    const digW = digs.length * gw;
+    const totalW = digW + (unit ? gap + unit.w : 0);
+    const boxW = l.boxW || totalW, boxH = l.boxH || gw;
+    const al = l.boxAlign ?? 0x0b;
+    let sx = l.x;
+    if (al === 0x02 || al === 0x05 || al === 0x0a) sx = l.x + Math.round((boxW - totalW) / 2);
+    else if (al === 0x03 || al === 0x06 || al === 0x0b) sx = l.x + (boxW - totalW);
+    const midY = (ih: number) => l.y + Math.round((boxH - ih) / 2);
+    let cx = sx;
+    for (const d of digs) { const g = glyphs[d]; if (g) blend(data, dim, g, cx, midY(g.h)); cx += gw; }
+    if (unit) blend(data, dim, unit, cx + gap, midY(unit.h));
   }
 
   return { w: dim, h: dim, data };

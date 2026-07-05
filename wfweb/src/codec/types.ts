@@ -16,6 +16,7 @@ export type LayerKind =
 export type MockKind =
   | "none"
   | "time"
+  | "timeSec"
   | "hour"
   | "minute"
   | "seconds"
@@ -108,6 +109,32 @@ export interface Layer {
   digitCountOff?: number;
   /** Chave `assetOff,x,y` do nó-fonte a clonar (bytes comprovados) no rebuild. */
   sourceKey?: string;
+  /** Caixa do GRUPO 0x68 (container sty_group_t). O conteúdo é alinhado dentro de (x,y,boxW,boxH)
+   *  conforme `boxAlign` (grade 3×3 LVGL do byte em group+14). */
+  boxW?: number;
+  boxH?: number;
+  /** Byte de alinhamento do grupo (group+14): grade 3×3 LVGL. Confirmado no corpus: 0x0a=centro,
+   *  0x09=esq-meio, 0x0b=dir-meio, 0x02=topo-centro, 0x00=default(topo-esq)… Render posiciona por ele. */
+  boxAlign?: number;
+  /** SLOT DE MÉTRICA (só-preview): posição de complicação que o firmware preenche com a métrica
+   *  escolhida na CONFIG do aparelho (não está no .bin — só a lista de opções está). O editor mostra
+   *  UMA variante (`metricSel`) p/ visualização e um dropdown troca. NÃO afeta o relógio real. O
+   *  atlas de dígitos fica em `assetOff`; a caixa em (x,y,boxW,boxH)+boxAlign. */
+  metricVariants?: MetricVariant[];
+  metricSel?: number;
+}
+
+/** Uma opção de métrica de um slot de preview (325 Metric etc.). */
+export interface MetricVariant {
+  sourceId: number;
+  mock: MockKind;
+  label: string;
+  /** Imagem do rótulo (STEPS/KCAL/KM…). undefined = sem rótulo. */
+  unitOff?: number;
+  unitCf?: number;
+  unitW?: number;
+  unitH?: number;
+  unitLen?: number;
 }
 
 /** Dial estruturado parseado + editável. */

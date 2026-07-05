@@ -9,7 +9,8 @@ import { simEnv } from "../codec/mock.js";
 import type { Layer, MockKind, Notation, StructDial } from "../codec/types.js";
 import { drawToCanvas, pointerToCanvas } from "./canvas.js";
 import { readFileBytes, downloadBytes, outName } from "./fileio.js";
-import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCover, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg, rescaleRgba, compositeImage } from "./imageutil.js";
+import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCover, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg, rescaleRgba, compositeImage, renderFontGlyph } from "./imageutil.js";
+import { draw7Seg, quantizeAlpha } from "../codec/glyphs.js";
 import { decodeAssetToRgba, rgbaToRasterForCf } from "../codec/rgb565.js";
 import { lz4CompressBest, lz4CompressLiteralsOnly } from "../codec/lz4.js";
 import { validateDial, validateBin, errorsOf, usedBytes, type Issue } from "../codec/validate.js";
@@ -581,10 +582,30 @@ export class App {
       </div>`;
     }
 
+    // Fonte: se a camada é um atlas de dígitos (≥10 glifos consecutivos), oferece troca de tipografia.
+    // Só lista fontes que CABEM em todos os 10 slots deste dial (all-or-nothing, same-footprint).
+    const fontRun = this.glyphRun(l);
+    const fontColor = l.color ? hex : "#ffffff";
+    let fontRow = "";
+    if (fontRun) {
+      const fitting = this.fittingFonts(fontRun, l.assetOff);
+      if (fitting.length === 0) {
+        fontRow = `<div class="field note">Trocar fonte: os dígitos deste dial (cf5, ${fontRun.ws[0]}×${fontRun.hs[0]}) têm slots pequenos demais p/ re-renderizar uma fonte same-footprint. Use uma base com dígitos menores (ex.: Mono).</div>`;
+      } else {
+        const opts = fitting.map((f) => `<option value="${f.id}">${f.label}</option>`).join("");
+        const dropped = App.FONTS.length - fitting.length;
+        const note = dropped > 0 ? `<div class="budget-sub">${dropped} fonte(s) escondida(s): não cabem nos slots deste dial.</div>` : "";
+        fontRow = `<div class="field"><label title="Troca a tipografia dos dígitos 0–9 re-skinando cada glifo no seu slot (in-place → instala).">Fonte</label><select id="fFont">${opts}</select></div>
+          <div class="field"><label>Cor da fonte</label><input type="color" id="fFontColor" value="${fontColor}"></div>
+          <div class="field full"><button class="btn wide" id="fApplyFont">🔤 Aplicar fonte aos dígitos</button>${note}</div>`;
+      }
+    }
+
     const frag = document.createElement("div");
     frag.innerHTML = `
       <div class="field"><label>Type</label><span>${iconFor(l.kind)} ${l.kind} · cf${l.cf} · ${l.w}×${l.h}${l.frames ? ` · ${l.frames} frames` : ""}</span></div>
       ${budgetRow}
+      ${fontRow}
       <div class="field"><label>X</label><input type="number" id="fX" value="${l.x}" ${movable ? "" : "disabled"}></div>
       <div class="field"><label>Y</label><input type="number" id="fY" value="${l.y}" ${movable ? "" : "disabled"}></div>
       ${resizable ? `<div class="field"><label title="Redimensiona o elemento: reescala a imagem e atualiza as dimensões (in-place). O raster novo precisa caber no slot original.">W</label><input type="number" id="fW" value="${l.w}" min="1" max="466"></div>` : ""}
@@ -758,6 +779,12 @@ export class App {
       this.refreshJson();
     });
     document.getElementById("fReplace")?.addEventListener("click", () => this.replaceLayerImage(this.selected));
+    document.getElementById("fApplyFont")?.addEventListener("click", () => {
+      const fontId = (document.getElementById("fFont") as HTMLSelectElement | null)?.value ?? "7seg";
+      const chex = (document.getElementById("fFontColor") as HTMLInputElement | null)?.value ?? "#ffffff";
+      const color: [number, number, number] = [parseInt(chex.slice(1, 3), 16), parseInt(chex.slice(3, 5), 16), parseInt(chex.slice(5, 7), 16)];
+      this.applyFont(l, fontId, color);
+    });
     document.getElementById("fFramesFiles")?.addEventListener("click", () => this.replaceFrames(this.selected));
     document.getElementById("fMotImg")?.addEventListener("click", () => {
       const mode = (document.getElementById("fMotion") as HTMLSelectElement | null)?.value ?? "hand";
@@ -1061,6 +1088,90 @@ export class App {
     }
     l.newPayload = prev; // não coube em nenhum nível → reverte, não insere
     return null;
+  }
+
+  // ---- Trocar FONTE de um atlas de dígitos (re-skin de cada glifo, in-place same-footprint) ----
+  /** Estilos de fonte disponíveis. "7seg" é vetorial (glyphs.ts); os demais usam fontes reais via canvas. */
+  static readonly FONTS: Array<{ id: string; label: string; family?: string }> = [
+    { id: "7seg", label: "7-Segmentos" },
+    { id: "sans", label: "Sans (bold)", family: "system-ui, 'Segoe UI', Roboto, sans-serif" },
+    { id: "mono", label: "Monospace", family: "'DejaVu Sans Mono', 'Courier New', monospace" },
+    { id: "serif", label: "Serifada", family: "Georgia, 'Times New Roman', serif" },
+    { id: "condensed", label: "Condensada", family: "'Arial Narrow', 'Roboto Condensed', sans-serif" },
+    { id: "rounded", label: "Arredondada", family: "'Trebuchet MS', 'Segoe UI', sans-serif" },
+  ];
+
+  /** Detecta o atlas de dígitos de uma camada de texto: run de assets consecutivos de MESMO cf a
+   *  partir de `assetOff`. Retorna offsets/lens/dims dos glifos (≥10 = editável como fonte) ou null. */
+  private glyphRun(l: Layer): { offs: number[]; lens: number[]; ws: number[]; hs: number[]; cf: number } | null {
+    if (!this.dial || l.kind !== "text" || l.cf === 1 || l.assetOff <= 0) return null;
+    const assets = scanAssets(this.dial.raw).sort((a, b) => a[0] - b[0]);
+    const start = assets.findIndex((a) => a[0] === l.assetOff);
+    if (start < 0) return null;
+    const cf0 = assets[start][1];
+    const offs: number[] = [], lens: number[] = [], ws: number[] = [], hs: number[] = [];
+    for (let k = start; k < assets.length && offs.length < 10; k++) {
+      const [off, cf, w, h, len] = assets[k];
+      if (cf !== cf0) break;
+      offs.push(off); lens.push(len); ws.push(w); hs.push(h);
+    }
+    return offs.length >= 10 ? { offs, lens, ws, hs, cf: cf0 } : null;
+  }
+
+  /** Codifica UM glifo de dígito numa fonte, encaixando no slot (`cap`) via escada de alpha. RGB
+   *  normalizado p/ a cor sólida (anti-alias fringe quebra os runs do LZ4). Retorna payload ou null. */
+  private encodeGlyph(dgt: number, fontId: string, w: number, h: number, cap: number, cf: number, color: [number, number, number]): Uint8Array | null {
+    const font = App.FONTS.find((f) => f.id === fontId) ?? App.FONTS[0];
+    // 7-seg pode afinar as barras p/ caber em slot apertado (mantém a cara). Fontes reais só variam o
+    // alpha. Tenta cada variante × escada de alpha até caber.
+    const thicks = font.family ? [0] : [0.15, 0.12, 0.09, 0.07, 0.05, 0.04, 0.03];
+    for (const th of thicks) {
+      const base = font.family ? renderFontGlyph(String(dgt), w, h, font.family, color) : draw7Seg(w, h, dgt, color, th);
+      for (let p = 0; p < w * h; p++) { if (base[p * 4 + 3] > 0) { base[p * 4] = color[0]; base[p * 4 + 1] = color[1]; base[p * 4 + 2] = color[2]; } }
+      for (const lv of [256, 8, 4, 2]) {
+        const cand = rgbaToRasterForCf(quantizeAlpha(base, lv), w, h, cf);
+        let comp = lz4CompressBest(cand);
+        if (comp.length > cap) { const lit = lz4CompressLiteralsOnly(cand); if (lit.length < comp.length) comp = lit; }
+        if (comp.length <= cap) return comp;
+      }
+    }
+    return null;
+  }
+
+  /** Quais fontes cabem em TODOS os 10 slots deste atlas (all-or-nothing). Testa em branco (a cor não
+   *  muda o tamanho). Cacheado por assetOff p/ não recomputar a cada render do inspector. */
+  private fittingFonts(run: NonNullable<ReturnType<App["glyphRun"]>>, off: number): typeof App.FONTS {
+    if (this._fontFitCache?.off === off) return this._fontFitCache.fonts;
+    const fonts = App.FONTS.filter((f) =>
+      Array.from({ length: 10 }, (_, d) => d).every((d) => this.encodeGlyph(d, f.id, run.ws[d], run.hs[d], run.lens[d], run.cf, [255, 255, 255]) !== null),
+    );
+    this._fontFitCache = { off, fonts };
+    return fonts;
+  }
+  private _fontFitCache?: { off: number; fonts: typeof App.FONTS };
+
+  /** Aplica uma fonte ao atlas de dígitos: re-skina os 10 glifos no seu slot (same-footprint), via
+   *  newFramePayloads/frameOffsets. All-or-nothing (só entra se todos os 10 couberem). */
+  private applyFont(l: Layer, fontId: string, color: [number, number, number]): void {
+    const run = this.glyphRun(l);
+    if (!run) { this.status("Esta camada não é um atlas de dígitos editável.", "err"); return; }
+    const font = App.FONTS.find((f) => f.id === fontId) ?? App.FONTS[0];
+    const payloads: (Uint8Array | null)[] = [];
+    for (let dgt = 0; dgt < 10; dgt++) {
+      payloads.push(this.encodeGlyph(dgt, fontId, run.ws[dgt], run.hs[dgt], run.lens[dgt], run.cf, color));
+    }
+    if (payloads.some((p) => p === null)) {
+      this.status(`Fonte "${font.label}" não cabe nos slots deste dial (cf5, same-footprint). Use "7-Segmentos" ou uma base com dígitos maiores.`, "err");
+      return;
+    }
+    this.pushUndo();
+    l.frameOffsets = run.offs;
+    l.frameLens = run.lens;
+    l.newFramePayloads = payloads;
+    this.render();
+    this.buildInspector();
+    this.refreshJson();
+    this.status(`Fonte "${font.label}" aplicada aos 10 dígitos. ✓ Same-footprint → instala.`, "ok");
   }
 
   // ---- Multi-frame: re-skin dos frames (same-footprint por frame) ----

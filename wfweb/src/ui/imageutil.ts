@@ -9,6 +9,22 @@ function scratch(w: number, h: number): { cv: HTMLCanvasElement; ctx: CanvasRend
   return { cv, ctx };
 }
 
+/** Rasteriza um caractere (dígito ou ':') numa fonte real via canvas, RGBA w×h, fundo transparente,
+ *  cor `color`, ocupando ~a altura toda e encolhendo se passar da largura. P/ trocar a fonte de um
+ *  atlas de dígitos (re-skin glifo a glifo). `family` = qualquer font-family CSS. */
+export function renderFontGlyph(ch: string, w: number, h: number, family: string, color: [number, number, number]): Uint8ClampedArray {
+  const { ctx } = scratch(w, h);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  let size = Math.max(6, Math.floor(h * 0.92));
+  ctx.font = `${size}px ${family}`; // peso normal (bold enche muito → não cabe no slot cf5)
+  while (size > 6 && ctx.measureText(ch).width > w * 0.9) { size--; ctx.font = `${size}px ${family}`; }
+  ctx.fillText(ch, w / 2, h / 2 + size * 0.03);
+  return ctx.getImageData(0, 0, w, h).data;
+}
+
 /** RGBA (w*h*4) → PNG data-URL. */
 export function rgbaToDataUrl(data: Uint8ClampedArray, w: number, h: number): string {
   const { cv, ctx } = scratch(w, h);

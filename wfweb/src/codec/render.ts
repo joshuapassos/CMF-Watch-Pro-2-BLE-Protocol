@@ -327,7 +327,9 @@ export function renderAt(dial: StructDial, hh: number, mm: number, ss: number, j
         s = l.digitZeroPad ? String(clamped).padStart(l.digitCount, "0") : String(clamped);
       }
     }
-    const glyphs = atlasGlyphs(dial, l.assetOff, 12, undefined, jpeg);
+    // Troca de fonte: se a camada tem glifos re-skinados (frameOffsets/newFramePayloads), o preview os usa.
+    const over = l.frameOffsets && l.newFramePayloads ? { offsets: l.frameOffsets, payloads: l.newFramePayloads } : undefined;
+    const glyphs = atlasGlyphs(dial, l.assetOff, 12, over, jpeg);
     if (glyphs.length < 10) continue;
     // cf=13 = máscara A8 (RGB branco, alpha=mask); o firmware pinta com a cor do elemento.
     if (l.cf === 13 && l.color) {

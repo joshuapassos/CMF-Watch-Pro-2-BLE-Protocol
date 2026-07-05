@@ -43,6 +43,19 @@ export function bitmapToRgbaCoverSquare(bmp: ImageBitmap, dim: number): Uint8Cla
   return ctx.getImageData(0, 0, dim, dim).data;
 }
 
+/** Cobre um retângulo w×h recortando o centro (object-fit: cover) — preserva o aspecto, corta o
+ *  excesso. Diferente do `bitmapToRgbaExact` (que ESTICA e distorce). P/ inserir foto num slot. */
+export function bitmapToRgbaCover(bmp: ImageBitmap, w: number, h: number): Uint8ClampedArray {
+  const { ctx } = scratch(w, h);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  const scale = Math.max(w / bmp.width, h / bmp.height);
+  const dw = bmp.width * scale;
+  const dh = bmp.height * scale;
+  ctx.drawImage(bmp, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  return ctx.getImageData(0, 0, w, h).data;
+}
+
 /** Reescala um RGBA (ow×oh) p/ (nw×nh) via canvas (suave). P/ resize de elemento. */
 export function rescaleRgba(data: Uint8ClampedArray | Uint8Array, ow: number, oh: number, nw: number, nh: number): Uint8ClampedArray {
   const src = scratch(ow, oh);

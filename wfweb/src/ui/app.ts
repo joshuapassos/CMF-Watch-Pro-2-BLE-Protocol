@@ -9,7 +9,7 @@ import { simEnv } from "../codec/mock.js";
 import type { Layer, MockKind, Notation, StructDial } from "../codec/types.js";
 import { drawToCanvas, pointerToCanvas } from "./canvas.js";
 import { readFileBytes, downloadBytes, outName } from "./fileio.js";
-import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg, rescaleRgba, compositeImage } from "./imageutil.js";
+import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCover, bitmapToRgbaCoverSquare, jpegPayloadToRgba, rgbaToJpeg, rescaleRgba, compositeImage } from "./imageutil.js";
 import { decodeAssetToRgba, rgbaToRasterForCf } from "../codec/rgb565.js";
 import { lz4CompressBest, lz4CompressLiteralsOnly } from "../codec/lz4.js";
 
@@ -811,24 +811,92 @@ export class App {
       if (!file) return;
       try {
         const bmp = await fileToBitmap(file);
-        const rgba = bitmapToRgbaExact(bmp, l.w, l.h);
-        const size = setLayerImageRaster(l, rgba);
+        // "corte": cover (preserva aspecto, recorta o excesso) em vez de esticar/distorcer.
+        const rgba = bitmapToRgbaCover(bmp, l.w, l.h);
+        // Tenta caber no slot (comprime/quantiza/suaviza em escada). Se não couber em nenhum nível,
+        // NÃO insere (mantém o que estava) — "se não conseguir, não aparece".
+        const fit = await this.fitImageToSlot(l, rgba);
         this.buildAssetBar();
         this.render();
-        if (size > l.assetLen) {
+        if (!fit) {
           this.status(
-            `Imagem trocada, mas comprime em ${size}B > ${l.assetLen}B do asset original — ` +
-              `<b>não cabe no same-footprint</b>; exportação vai falhar até caber.`,
+            `Imagem não coube no slot (${l.assetLen}B) nem após comprimir/cortar — <b>descartada</b> ` +
+              `(o original foi mantido). Slot pequeno demais p/ essa arte.`,
             "err",
           );
-        } else {
-          this.status(`Image replaced (${size}B ≤ ${l.assetLen}B). ✓`, "ok");
+          return;
         }
+        const extra = fit.note ? ` — ${fit.note}` : "";
+        this.status(`Imagem inserida${extra}. ${fit.size}B ≤ ${l.assetLen}B ✓ same-footprint → instala.`, "ok");
       } catch (err) {
         this.status("Image load failed: " + (err as Error).message, "err");
       }
     });
     input.click();
+  }
+
+  /** Posteriza (reduz p/ 2^bits níveis por canal) preservando o alpha. Menos cores → runs mais
+   *  longos → LZ4 menor. `bits>=8` devolve o original. */
+  private posterize(rgba: Uint8ClampedArray, bits: number): Uint8ClampedArray {
+    if (bits >= 8) return rgba;
+    const levels = (1 << bits) - 1;
+    const out = new Uint8ClampedArray(rgba.length);
+    for (let i = 0; i < rgba.length; i += 4) {
+      out[i] = Math.round((Math.round((rgba[i] / 255) * levels) / levels) * 255);
+      out[i + 1] = Math.round((Math.round((rgba[i + 1] / 255) * levels) / levels) * 255);
+      out[i + 2] = Math.round((Math.round((rgba[i + 2] / 255) * levels) / levels) * 255);
+      out[i + 3] = rgba[i + 3];
+    }
+    return out;
+  }
+
+  /** Encaixa um RGBA (já no tamanho w×h da camada) no slot same-footprint, degradando só o necessário:
+   *  cf1 → busca de qualidade JPEG; cf4/5/13/24 (LZ4 sem perda) → escada de suavização+quantização até
+   *  o comprimido caber em `assetLen`. Grava `newPayload` e devolve {size, note}, ou `null` (e mantém o
+   *  payload anterior) se não couber em nenhum nível. */
+  private async fitImageToSlot(l: Layer, rgba: Uint8ClampedArray): Promise<{ size: number; note: string } | null> {
+    const cap = l.assetLen;
+    const prev = l.newPayload;
+    if (l.cf === 1) {
+      try {
+        const jpg = await rgbaToJpeg(rgba, l.w, l.h, cap); // já faz binary-search de qualidade p/ caber
+        l.newPayload = jpg;
+        return { size: jpg.length, note: jpg.length > cap * 0.7 ? "qualidade JPEG reduzida p/ caber" : "" };
+      } catch {
+        l.newPayload = prev;
+        return null;
+      }
+    }
+    const tryComp = (cand: Uint8ClampedArray): Uint8Array => {
+      const raster = rgbaToRasterForCf(cand, l.w, l.h, l.cf);
+      let comp = lz4CompressBest(raster);
+      if (comp.length > cap) { const lit = lz4CompressLiteralsOnly(raster); if (lit.length < comp.length) comp = lit; }
+      return comp;
+    };
+    const ladder = [
+      { blur: 1, bits: 8, note: "" },
+      { blur: 1, bits: 6, note: "cores quantizadas p/ caber" },
+      { blur: 1, bits: 5, note: "cores quantizadas p/ caber" },
+      { blur: 0.7, bits: 6, note: "suavizada + quantizada p/ caber" },
+      { blur: 0.7, bits: 5, note: "suavizada + quantizada p/ caber" },
+      { blur: 0.5, bits: 5, note: "bem suavizada p/ caber" },
+      { blur: 0.5, bits: 4, note: "bem suavizada p/ caber" },
+      { blur: 0.35, bits: 4, note: "muito suavizada p/ caber" },
+      { blur: 0.25, bits: 4, note: "muito suavizada p/ caber" },
+      { blur: 0.25, bits: 3, note: "reduzida ao máximo p/ caber" },
+    ];
+    for (const step of ladder) {
+      let cand = rgba;
+      if (step.blur < 1) {
+        const sw = Math.max(1, Math.round(l.w * step.blur)), sh = Math.max(1, Math.round(l.h * step.blur));
+        cand = rescaleRgba(rescaleRgba(cand, l.w, l.h, sw, sh), sw, sh, l.w, l.h); // down→up = borra o detalhe
+      }
+      if (step.bits < 8) cand = this.posterize(cand, step.bits);
+      const comp = tryComp(cand);
+      if (comp.length <= cap) { l.newPayload = comp; return { size: comp.length, note: step.note }; }
+    }
+    l.newPayload = prev; // não coube em nenhum nível → reverte, não insere
+    return null;
   }
 
   // ---- Multi-frame: re-skin dos frames (same-footprint por frame) ----

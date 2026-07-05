@@ -79,10 +79,10 @@ for (const id of ["359", "288", "362"]) {
     const start = sorted.findIndex((a) => a[0] === base);
     if (start < 0) continue;
     const [, cf0, w0, h0] = sorted[start]; // 1º glifo define o tamanho; só do MESMO tamanho é dígito
-    for (let k = start, i = 0; k < sorted.length && i < 12; k++, i++) {
+    for (let k = start, i = 0; k < sorted.length && i < 10; k++, i++) { // só 0-9 (o 11º asset costuma ser separador '/' de tamanho ~igual → não desenhar colon nele)
       const [off, cf, w, h] = sorted[k];
       if (cf !== cf0 || Math.abs(w - w0) > 4 || Math.abs(h - h0) > 4) break; // para em elemento de outro tamanho (decoração)
-      if (!glyphDigit.has(off)) glyphDigit.set(off, i < 10 ? i : 10);
+      if (!glyphDigit.has(off)) glyphDigit.set(off, i);
     }
   }
 

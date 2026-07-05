@@ -84,6 +84,17 @@ export function decodeAssetToRgba(payload: Uint8Array, cf: number, w: number, h:
  * Espelha `raster_for_cf` (assume que a imagem já foi redimensionada p/ w×h).
  */
 export function rgbaToRasterForCf(rgba: Uint8ClampedArray | Uint8Array, w: number, h: number, cf: number): Uint8Array {
+  // cf=13 = máscara A8 packed em NIBBLE (2 px/byte, par=low, ímpar=high; α→4 bits). Inverso exato do
+  // decode. Sem isto, cf13 caía no ramo RGBA e virava lixo (dither) no re-skin/erase.
+  if (cf === 13) {
+    const out = new Uint8Array(Math.ceil((w * h) / 2));
+    for (let j = 0; j < w * h; j++) {
+      const nib = (Math.round(rgba[j * 4 + 3] / 17) & 0x0f);
+      if (j % 2 === 0) out[j >> 1] = nib;
+      else out[j >> 1] |= nib << 4;
+    }
+    return out;
+  }
   const bpp = bppOf(cf) ?? 2;
   const out = new Uint8Array(w * h * bpp);
   let oi = 0;

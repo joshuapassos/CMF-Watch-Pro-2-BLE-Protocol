@@ -123,6 +123,9 @@ export class App {
 
   /** Catálogo de templates (bases boas p/ re-skin in-place), servidos de /templates. */
   private static readonly TEMPLATES: Array<{ id: string; name: string; style: string }> = [
+    { id: "359", name: "Chrono", style: "Digital HH:MM + data + 2 anéis — religue os campos (temp/passos/kcal/bpm/distância)" },
+    { id: "288", name: "Mono", style: "Digital minimalista HH:MM + data — religue a data p/ temp, etc." },
+    { id: "362", name: "Bold", style: "Digital de dígitos GRANDES HH:MM + data" },
     { id: "290", name: "Aurora", style: "Canvas em gradiente — troque o fundo por foto/arte" },
     { id: "309", name: "Ember", style: "Analógico limpo — gradiente vinho + ponteiros" },
     { id: "275", name: "Midnight", style: "Analógico limpo — gradiente azul + ponteiros" },

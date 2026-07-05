@@ -269,6 +269,37 @@ h2 {
 .btn.danger { color: #ff7a6b; border-color: #5a2a2a; }
 .btn.danger:hover { background: #3a1e1e; border-color: #ff5b5b; }
 
+/* ---- Painel de validação (alertas ao vivo) ---- */
+.validation { border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 12px; border: 1px solid var(--line); background: var(--panel2); }
+.validation.ok { border-color: #2c5d3a; background: #16241b; }
+.validation.warn { border-color: #6b5a2a; background: #241f14; }
+.validation.err { border-color: #7a2c34; background: #241416; }
+.validation .vhead { font-weight: 600; display: block; }
+.validation.ok .vhead { color: var(--ok); }
+.validation.warn .vhead { color: #e6c76a; }
+.validation.err .vhead { color: var(--err); }
+.validation .vsub { color: var(--muted); font-size: 11px; }
+.validation .vlist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.validation .vlist li { padding: 4px 6px; border-radius: 4px; background: rgba(0,0,0,0.25); line-height: 1.3; cursor: pointer; }
+.validation .vlist li.err { border-left: 3px solid var(--err); }
+.validation .vlist li.warn { border-left: 3px solid #e6c76a; }
+.validation .vlist li:hover { background: rgba(0,0,0,0.45); }
+
+/* ---- Badge de problema na lista de camadas ---- */
+.lbadge { font-size: 11px; margin: 0 4px; }
+.lbadge.err { color: var(--err); }
+.lbadge.warn { color: #e6c76a; }
+
+/* ---- Barra de orçamento do slot (inspector) ---- */
+.budget { display: flex; flex-direction: column; gap: 4px; background: var(--panel2); border-radius: 6px; padding: 7px 9px; }
+.budget-head { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.budget-num { font-variant-numeric: tabular-nums; color: var(--fg); }
+.budget-bar { height: 6px; border-radius: 3px; background: #0d0e12; overflow: hidden; }
+.budget-fill { height: 100%; background: var(--ok); transition: width 0.15s; }
+.budget.over .budget-fill { background: var(--err); }
+.budget-sub { font-size: 10.5px; color: var(--muted); }
+.budget.over .budget-sub { color: var(--err); }
+
 /* ---- Responsive: narrow screens (phones) — stack the 3 columns, canvas on top ---- */
 @media (max-width: 900px) {
   body { height: auto; min-height: 100vh; overflow-y: auto; }

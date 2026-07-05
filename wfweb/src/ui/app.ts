@@ -13,6 +13,7 @@ import { rgbaToDataUrl, fileToBitmap, bitmapToRgbaExact, bitmapToRgbaCover, bitm
 import { decodeAssetToRgba, rgbaToRasterForCf } from "../codec/rgb565.js";
 import { lz4CompressBest, lz4CompressLiteralsOnly } from "../codec/lz4.js";
 import { validateDial, validateBin, errorsOf, usedBytes, type Issue } from "../codec/validate.js";
+import { dialComponents, addableComponents, scoreBases, carryOver, COMP_LABEL, type BaseInfo } from "../codec/rebase.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -30,6 +31,8 @@ export class App {
   private guides: Array<{ x?: number; y?: number }> = [];
   private issues: Issue[] = [];
   private lastIssueSig = "__init__"; // sentinela: força o 1º render do painel (mesmo com 0 problemas)
+  private baseIndex?: BaseInfo[]; // índice de bases (templates) por componentes — lazy
+  private rebaseUndo?: StructDial; // dial anterior a um rebase (Ctrl+Z volta a ele)
 
   // refs
   private canvas = $<HTMLCanvasElement>("preview");
@@ -54,6 +57,9 @@ export class App {
     $("templateClose").addEventListener("click", () => this.closeTemplateGallery());
     $("templateModal").addEventListener("click", (e) => { if (e.target === $("templateModal")) this.closeTemplateGallery(); });
     $("btnBake").addEventListener("click", () => this.bakeToBackground());
+    $("btnAddComp").addEventListener("click", () => void this.openAddComponent());
+    $("addClose").addEventListener("click", () => { $("addModal").hidden = true; });
+    $("addModal").addEventListener("click", (e) => { if (e.target === $("addModal")) $("addModal").hidden = true; });
     $("btnExport").addEventListener("click", () => this.onExport());
     $("btnPlay").addEventListener("click", () => this.togglePlay());
     $("btnApplyJson").addEventListener("click", () => this.onApplyJson());
@@ -165,6 +171,85 @@ export class App {
     }
   }
 
+  // ---- Adicionar componente por rebase ----
+  /** Constrói (uma vez) o índice de bases: baixa e parseia os templates, mapeando seus componentes. */
+  private async ensureBaseIndex(): Promise<BaseInfo[]> {
+    if (this.baseIndex) return this.baseIndex;
+    const idx: BaseInfo[] = [];
+    for (const t of App.TEMPLATES) {
+      try {
+        const resp = await fetch(`${import.meta.env.BASE_URL}templates/${t.id}.bin`);
+        if (!resp.ok) continue;
+        const d = parseStructured(new Uint8Array(await resp.arrayBuffer()));
+        idx.push({ id: t.id, name: t.name, comps: dialComponents(d) });
+      } catch { /* ignora base que não baixa/parseia */ }
+    }
+    this.baseIndex = idx;
+    return idx;
+  }
+
+  /** Abre o modal "Adicionar componente": lista os componentes que ALGUMA base tem e o dial atual não,
+   *  cada um com a melhor base compatível (rebase automático) e o % de compatibilidade. */
+  private async openAddComponent(): Promise<void> {
+    if (!this.dial) return;
+    this.status("Procurando bases compatíveis…");
+    const bases = await this.ensureBaseIndex();
+    const cur = dialComponents(this.dial);
+    const addable = addableComponents(cur, bases);
+    const grid = $("addGrid");
+    grid.innerHTML = "";
+    if (addable.length === 0) {
+      grid.innerHTML = `<p class="modal-sub">Nenhum componente novo disponível nas bases atuais. (As bases embarcadas cobrem: segundos, temperatura, data, dia da semana, calorias, %, distância.)</p>`;
+    }
+    for (const comp of addable) {
+      const ranked = scoreBases(cur, bases, comp);
+      if (!ranked.length) continue;
+      const best = ranked[0];
+      const pct = Math.round(best.jaccard * 100);
+      const card = document.createElement("button");
+      card.className = "tpl-card add-card";
+      card.type = "button";
+      card.innerHTML =
+        `<img src="${import.meta.env.BASE_URL}templates/${best.base.id}.png" alt="${best.base.name}" loading="lazy">` +
+        `<div class="tpl-name">➕ ${COMP_LABEL[comp] ?? comp}</div>` +
+        `<div class="tpl-style">via <b>${best.base.name}</b> · ${pct}% compatível</div>`;
+      card.addEventListener("click", () => { $("addModal").hidden = true; void this.doRebase(comp, best.base); });
+      grid.appendChild(card);
+    }
+    this.status(`${addable.length} componente(s) disponível(is) p/ adicionar.`, "ok");
+    $("addModal").hidden = false;
+  }
+
+  /** Executa o rebase: guarda o dial atual (p/ desfazer), carrega a base nova, porta as edições
+   *  compatíveis e revalida. */
+  private async doRebase(comp: string, base: BaseInfo): Promise<void> {
+    if (!this.dial) return;
+    try {
+      const resp = await fetch(`${import.meta.env.BASE_URL}templates/${base.id}.bin`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      const newDial = parseStructured(bytes);
+      const carry = carryOver(this.dial, newDial); // muta newDial com as edições portadas
+      // guarda o dial anterior INTEIRO p/ desfazer o rebase (Ctrl+Z volta a ele)
+      this.rebaseUndo = this.dial;
+      this.dial = newDial;
+      this.aodMode = false;
+      document.body.classList.remove("aod-mode");
+      $("segNormal").classList.add("active"); $("segAod").classList.remove("active");
+      $("layersTitle").textContent = "Layers";
+      this.selected = newDial.layers.findIndex((l) => l.kind !== "background" && !l.aod);
+      this.undoStack = []; this.redoStack = [];
+      await this.predecodeJpegs();
+      this.enableUi(true);
+      this.refreshAll();
+      const skipNote = carry.skipped.length ? ` — não coube: ${carry.skipped.join(", ")}` : "";
+      const carried = carry.applied.length ? `portadas: ${carry.applied.join(", ")}` : "sem edições p/ portar";
+      this.status(`➕ ${COMP_LABEL[comp] ?? comp} adicionado — rebase p/ <b>${base.name}</b>. ${carried}${skipNote}. Ctrl+Z desfaz o rebase.`, "ok");
+    } catch (err) {
+      this.status(`Rebase falhou: ${(err as Error).message}`, "err");
+    }
+  }
+
   private async predecodeJpegs(): Promise<void> {
     this.jpegCache.clear();
     if (!this.dial) return;
@@ -205,7 +290,7 @@ export class App {
   }
 
   private enableUi(on: boolean): void {
-    for (const id of ["btnExport", "btnPlay", "btnApplyJson", "btnBake"]) ($(id) as HTMLButtonElement).disabled = !on;
+    for (const id of ["btnExport", "btnPlay", "btnApplyJson", "btnBake", "btnAddComp"]) ($(id) as HTMLButtonElement).disabled = !on;
     // AOD editing is available only when the dial actually has an always-on variant.
     const hasAod = !!on && (!!this.dial?.aod || (this.dial?.layers.some((l) => l.aod) ?? false));
     ($("segAod") as HTMLButtonElement).disabled = !hasAod;
@@ -350,7 +435,18 @@ export class App {
   }
 
   private undo(): void {
-    if (!this.dial || this.undoStack.length === 0) return;
+    if (!this.dial) return;
+    // Se não há edições locais empilhadas mas houve um rebase, Ctrl+Z desfaz o rebase (volta ao dial
+    // anterior inteiro).
+    if (this.undoStack.length === 0 && this.rebaseUndo) {
+      this.dial = this.rebaseUndo;
+      this.rebaseUndo = undefined;
+      this.selected = this.dial.layers.findIndex((l) => l.kind !== "background" && !l.aod);
+      void this.predecodeJpegs().then(() => this.refreshAll());
+      this.status("Rebase desfeito — dial anterior restaurado.", "ok");
+      return;
+    }
+    if (this.undoStack.length === 0) return;
     this.redoStack.push(this.snapshot());
     this.restore(this.undoStack.pop()!);
     this.status("Undone.", "ok");

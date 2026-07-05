@@ -18,6 +18,7 @@
         🖼 New photo dial<input id="openPhoto" type="file" accept="image/*" hidden />
       </label>
       <button id="btnBake" class="btn" disabled title="Achata as imagens estáticas no fundo (tela cheia) e apaga as originais — embute a sobreposição na arte. In-place.">🎨 Bake→fundo</button>
+      <button id="btnAddComp" class="btn" disabled title="Adiciona um componente trocando por uma base compatível que já o tem (rebase in-place) — adicionar camada não instala.">➕ Add component</button>
       <button id="btnExport" class="btn" disabled>💾 Export .bin</button>
       <button id="btnPlay" class="btn" disabled>▶</button>
       <span id="clock" class="clock">10:08:30</span>
@@ -68,6 +69,17 @@
         </div>
         <p class="modal-sub">Escolha uma base e personalize in-place (troque imagens, cor, posição, esconda o que não quer). Same-footprint → ativa no relógio.</p>
         <div id="templateGrid" class="tpl-grid"></div>
+      </div>
+    </div>
+
+    <div id="addModal" class="modal" hidden>
+      <div class="modal-box">
+        <div class="modal-head">
+          <h2>Adicionar componente</h2>
+          <button id="addClose" class="btn" type="button">✕</button>
+        </div>
+        <p class="modal-sub">Adicionar/remover camada não instala no relógio. Em vez disso, o editor troca por uma base compatível que já tem o componente (rebase in-place) e porta as suas edições (cor, fonte, imagem).</p>
+        <div id="addGrid" class="tpl-grid"></div>
       </div>
     </div>
 

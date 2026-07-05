@@ -12,9 +12,9 @@ import { renderAt } from "../src/codec/render.js";
 
 type RGB = [number, number, number];
 const PAL: Record<string, [RGB, RGB, RGB]> = { // [topo, base, acento]
-  "359": [[26, 58, 92], [8, 12, 22], [90, 175, 255]],   // azul
-  "288": [[64, 22, 26], [14, 10, 14], [255, 112, 90]],  // ember
-  "362": [[24, 27, 34], [8, 10, 14], [214, 220, 234]],  // grafite
+  "359": [[30, 70, 120], [8, 12, 26], [80, 180, 255]],   // azul c/ glow ciano
+  "288": [[70, 26, 30], [16, 10, 14], [255, 120, 96]],   // ember
+  "362": [[44, 50, 64], [10, 12, 18], [130, 150, 190]],  // grafite (mais claro p/ o gradiente aparecer)
 };
 
 function fillRoundRect(px: Uint8ClampedArray, W: number, H: number, x: number, y: number, w: number, h: number, r: number, c: RGB, alpha = 255) {
@@ -52,6 +52,36 @@ function gradient(W: number, H: number, top: RGB, bot: RGB): Uint8ClampedArray {
   for (let y = 0; y < H; y++) { const t = H <= 1 ? 0 : y / (H - 1); const r = Math.round(top[0] + (bot[0] - top[0]) * t), g = Math.round(top[1] + (bot[1] - top[1]) * t), b = Math.round(top[2] + (bot[2] - top[2]) * t);
     for (let x = 0; x < W; x++) { const o = (y * W + x) * 4; d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255; } }
   return d;
+}
+// Fundo caprichado: gradiente vertical + BRILHO de luz (banda suave perto do topo, cor de acento).
+// TUDO por LINHA (cada linha = uma cor) → mantém runs horizontais → LZ4 comprime barato. Radial
+// (glow/vinheta em círculo) explodia o LZ4 (43k) e estourava o slot. Aqui é vertical → ~2k.
+// `nb` = nº de faixas verticais distintas: nb=H → gradiente liso; nb menor → menos cores → menor.
+function bgRaster(W: number, H: number, top: RGB, bot: RGB, accent: RGB, nb: number): Uint8ClampedArray {
+  const d = new Uint8ClampedArray(W * H * 4);
+  const yGlow = H * 0.24, spread = H * 0.5, strength = 0.5;
+  for (let y = 0; y < H; y++) {
+    const bi = nb >= H ? y : Math.floor(y * nb / H);
+    const yb = nb >= H ? y : (bi + 0.5) * H / nb; // y representativo da faixa
+    const t = H <= 1 ? 0 : yb / (H - 1);
+    let r = top[0] + (bot[0] - top[0]) * t, g = top[1] + (bot[1] - top[1]) * t, b = top[2] + (bot[2] - top[2]) * t;
+    const bloom = Math.exp(-Math.pow((yb - yGlow) / spread, 2)) * strength; // luz suave no topo
+    r += (accent[0] - r) * bloom; g += (accent[1] - g) * bloom; b += (accent[2] - b) * bloom;
+    const R = Math.round(r), G = Math.round(g), B = Math.round(b);
+    for (let x = 0; x < W; x++) { const o = (y * W + x) * 4; d[o] = R; d[o + 1] = G; d[o + 2] = B; d[o + 3] = 255; }
+  }
+  return d;
+}
+// Escolhe o fundo MAIS LISO que cabe no slot (len): tenta liso → vai afunilando as faixas. Garante
+// que sempre cabe (o dial mais apertado ganha o gradiente mais grosseiro possível, mas nunca preto).
+function background(W: number, H: number, top: RGB, bot: RGB, accent: RGB, cf: number, len: number): Uint8ClampedArray {
+  for (const nb of [H, 96, 64, 48, 32, 24, 16, 12, 10, 8, 6, 4, 3, 2]) {
+    const rgba = bgRaster(W, H, top, bot, accent, nb);
+    let comp = lz4CompressBest(rgbaToRasterForCf(rgba, W, H, cf));
+    if (comp.length > len) { const lit = lz4CompressLiteralsOnly(rgbaToRasterForCf(rgba, W, H, cf)); if (lit.length < comp.length) comp = lit; }
+    if (comp.length <= len) return rgba;
+  }
+  return bgRaster(W, H, bot, bot, bot, 1); // último recurso: sólido escuro (sempre cabe)
 }
 // ---- PNG ----
 function crc32(b: Uint8Array){let c=~0;for(let i=0;i<b.length;i++){c^=b[i];for(let k=0;k<8;k++)c=(c>>>1)^(0xEDB88320&-(c&1));}return(~c)>>>0;}
@@ -91,7 +121,7 @@ for (const id of ["359", "288", "362"]) {
   for (const [off, cf, w, h, len] of assets) {
     if (cf === 1) { stats.skip++; continue; } // JPEG: deixa
     let art: Uint8ClampedArray;
-    if (off === bgOff) { art = gradient(w, h, top, bot); stats.bg++; }
+    if (off === bgOff) { art = background(w, h, top, bot, accent, cf, len); stats.bg++; }
     else if (glyphDigit.has(off)) { art = drawGlyph(w, h, glyphDigit.get(off)!, glyphDigit.get(off)! === 10 ? accent : [235, 238, 245]); stats.glyph++; }
     else if (cf === 4) { // cf4 SEM alpha: zeros = preto → preenche com a cor do gradiente (some no fundo)
       const c = gcol(layerY.get(off) ?? 233); art = new Uint8ClampedArray(w * h * 4);

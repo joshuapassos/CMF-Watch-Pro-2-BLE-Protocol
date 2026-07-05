@@ -562,7 +562,10 @@ export class App {
     // Resize = reescala a imagem + reescreve as dimensões (dimsWord) in-place. Só p/ sprites raster
     // (image/background, cf≠1) com asset próprio. Same-footprint: o raster novo deve caber no slot.
     const resizable = (l.kind === "image" || l.kind === "background") && l.cf !== 1 && l.assetOff > 0 && l.assetLen > 0;
-    const hasColor = l.kind === "arc" || (l.kind === "text" && l.cf === 13) || l.colorOff !== undefined;
+    // Atlas de dígitos usa o controle "Cor da fonte" (recolore os glifos); esconde o "Color" genérico
+    // pra não ter dois pickers.
+    const fontRun = this.glyphRun(l);
+    const hasColor = !fontRun && (l.kind === "arc" || (l.kind === "text" && l.cf === 13) || l.colorOff !== undefined);
     const isArc = l.kind === "arc";
     const isDataBound = l.kind === "text" || l.kind === "pointer" || l.kind === "arc";
     const hex = l.color ? "#" + l.color.map((c) => c.toString(16).padStart(2, "0")).join("") : "#ffffff";
@@ -582,10 +585,10 @@ export class App {
       </div>`;
     }
 
-    // Fonte: se a camada é um atlas de dígitos (≥10 glifos consecutivos), oferece troca de tipografia.
-    // Só lista fontes que CABEM em todos os 10 slots deste dial (all-or-nothing, same-footprint).
-    const fontRun = this.glyphRun(l);
-    const fontColor = l.color ? hex : "#ffffff";
+    // Fonte: se a camada é um atlas de dígitos (≥10 glifos consecutivos), oferece troca de tipografia +
+    // recolor. Só lista fontes que CABEM em todos os 10 slots (all-or-nothing, same-footprint).
+    const fcSample = fontRun ? this.sampleGlyphColor(l) : [255, 255, 255];
+    const fontColor = "#" + fcSample.map((c) => c.toString(16).padStart(2, "0")).join(""); // cor REAL dos dígitos
     let fontRow = "";
     if (fontRun) {
       const fitting = this.fittingFonts(fontRun, l.assetOff);
@@ -784,6 +787,12 @@ export class App {
       const chex = (document.getElementById("fFontColor") as HTMLInputElement | null)?.value ?? "#ffffff";
       const color: [number, number, number] = [parseInt(chex.slice(1, 3), 16), parseInt(chex.slice(3, 5), 16), parseInt(chex.slice(5, 7), 16)];
       this.applyFont(l, fontId, color);
+    });
+    // Mudar a cor recolore os dígitos AO VIVO (preserva a forma atual), sem precisar aplicar fonte.
+    document.getElementById("fFontColor")?.addEventListener("input", (e) => {
+      this.pushUndoDebounced();
+      const v = (e.target as HTMLInputElement).value;
+      this.recolorGlyphs(l, [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16)]);
     });
     document.getElementById("fFramesFiles")?.addEventListener("click", () => this.replaceFrames(this.selected));
     document.getElementById("fMotImg")?.addEventListener("click", () => {
@@ -1149,6 +1158,51 @@ export class App {
     return fonts;
   }
   private _fontFitCache?: { off: number; fonts: typeof App.FONTS };
+
+  /** Cor ATUAL dos dígitos de um atlas (amostra o glifo com mais tinta). cf13 = tint (l.color); cf5 =
+   *  média dos pixels opacos. P/ o color-picker abrir na cor certa em vez de branco fixo. */
+  private sampleGlyphColor(l: Layer): [number, number, number] {
+    if (l.cf === 13 && l.color) return l.color;
+    const run = this.glyphRun(l);
+    if (!run || !this.dial) return l.color ?? [255, 255, 255];
+    const i = 8 < run.offs.length ? 8 : 0; // "8" tem bastante tinta
+    const off = run.offs[i], w = run.ws[i], h = run.hs[i], cap = run.lens[i];
+    const src = l.newFramePayloads?.[i] ?? this.dial.raw.subarray(off + 8, off + 8 + cap);
+    const rgba = decodeAssetToRgba(src, run.cf, w, h);
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let p = 0; p < w * h; p++) if (rgba[p * 4 + 3] > 60) { r += rgba[p * 4]; g += rgba[p * 4 + 1]; b += rgba[p * 4 + 2]; n++; }
+    return n ? [Math.round(r / n), Math.round(g / n), Math.round(b / n)] : (l.color ?? [255, 255, 255]);
+  }
+
+  /** RECOLORE os dígitos preservando a forma: decodifica cada glifo (respeitando fonte já aplicada),
+   *  troca só o RGB dos pixels opacos e re-skina no slot (same-footprint). cf13 = tint via l.color. */
+  private recolorGlyphs(l: Layer, color: [number, number, number]): void {
+    if (!this.dial) return;
+    if (l.cf === 13) { l.color = color; this.render(); this.refreshJson(); return; } // máscara: tint direto
+    const run = this.glyphRun(l);
+    if (!run) return;
+    const payloads: (Uint8Array | null)[] = [];
+    for (let i = 0; i < 10; i++) {
+      const off = run.offs[i], w = run.ws[i], h = run.hs[i], cap = run.lens[i];
+      const src = l.newFramePayloads?.[i] ?? this.dial.raw.subarray(off + 8, off + 8 + cap);
+      const rgba = decodeAssetToRgba(src, run.cf, w, h);
+      for (let p = 0; p < w * h; p++) if (rgba[p * 4 + 3] > 0) { rgba[p * 4] = color[0]; rgba[p * 4 + 1] = color[1]; rgba[p * 4 + 2] = color[2]; }
+      let payload: Uint8Array | null = null;
+      for (const lv of [256, 8, 4, 2]) {
+        const cand = rgbaToRasterForCf(quantizeAlpha(rgba, lv), w, h, run.cf);
+        let comp = lz4CompressBest(cand);
+        if (comp.length > cap) { const lit = lz4CompressLiteralsOnly(cand); if (lit.length < comp.length) comp = lit; }
+        if (comp.length <= cap) { payload = comp; break; }
+      }
+      payloads.push(payload);
+    }
+    if (payloads.some((p) => p === null)) { this.status("Recolorir não coube em algum glifo (same-footprint).", "err"); return; }
+    l.frameOffsets = run.offs;
+    l.frameLens = run.lens;
+    l.newFramePayloads = payloads;
+    this.render();
+    this.refreshJson();
+  }
 
   /** Aplica uma fonte ao atlas de dígitos: re-skina os 10 glifos no seu slot (same-footprint), via
    *  newFramePayloads/frameOffsets. All-or-nothing (só entra se todos os 10 couberem). */

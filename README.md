@@ -15,7 +15,12 @@ Every non-obvious claim below is tagged with how it was established:
 - ✅ **validated on-device** — observed in a decrypted live capture or exercised against a real watch.
 - 🔎 **from firmware / APK RE** — extracted by decompiling the firmware (1.0.0.73) or the official
   APK (3.5.7); consistent with the code but **not** runtime-tested.
+- 🟡 **partially proven** — structurally established (offline, corpus-wide, or by RE) but the
+  remaining step needs the watch and hasn't been run.
 - ⚠️ **[uncertain]** — inferred, not confirmed; may be wrong.
+
+Where a later section corrects an earlier one, the earlier text is kept with a pointer rather than
+deleted — knowing which readings were tried and refuted saves the next person the same detour.
 
 Test device for all captures: `CMF Watch Pro 2-5485`, fw **1.0.0.73**, serial `CI04102520008192`,
 MCU Actions ATS3089C (Cortex-M4), screen **466×360**.
@@ -40,6 +45,23 @@ Enable notifications by writing `01 00` to each CCCD (`00002902-…`). The **com
 (`fff1`/`fff2`) carries the framed protocol below. The **shell channel** (`77d4…`) carries plain
 AT-style text (e.g. `AT GETSECRET`; see §14). The **data channel** (`02f0…`) carries large binary
 blobs (watchface, firmware, AGPS), coordinated by control opcodes on the command channel.
+
+**Service UUIDs** — the watch advertises ~10 primary services. Enumerated on a real unit:
+`0xfff0` (command), `0x180f` (battery), `0x180a` (device info), `0xefe7`, `0xffd0`,
+`02f00000-…ffe0` and `02f00000-…fe00` (data), `77d4e67c-2fe2-2334-0d35-9ccd078f529c` (shell /
+pairing), `e49a3001-f69a-11e8-8eb2-f2801f1b9fd1`, `f48a23c0-f69a-11e8-8eb2-f2801f1b9fd1`.
+
+> ⚠️ The **shell service** UUID is **`77d4e67c-…`**, not `77d4ff00-…`. Earlier revisions of this
+> document assumed the service shared the `ff00` prefix of its characteristics (`77d4ff01`/`77d4ff02`,
+> §14) — it does not, at least on the unit this was checked on (finding from
+> [freethinkel/fmc](https://github.com/freethinkel/fmc), see §Sources). The characteristic UUIDs are
+> unchanged. Not verified whether `77d4e67c` is stable across units — enumerate rather than hardcode.
+
+> 🌐 **Web Bluetooth callout.** Chromium only ever *discovers* services that the page listed in
+> `optionalServices`, even for an unfiltered `getPrimaryServices()` call — a page listing 3 services
+> sees 3, while `chrome://bluetooth-internals` (Chrome's own C++ layer, unscoped) shows all 10. If
+> you write a browser client, list **every** UUID above up front or pairing will fail with services
+> that plainly exist. No Web Bluetooth in Firefox/Safari; needs a user gesture + HTTPS/localhost.
 
 ✅ A whole real session ran on the single command channel — during a 160 s heavy-use capture there
 was **no traffic** on the data/firmware or shell channels except during an explicit OTA/watchface
@@ -551,21 +573,60 @@ via the `9063` pipeline with `watchfaceId = 0xFFFFFFFF`. (Reference codec: `core
 
 ### 11.4 Structured / store dial — container & codecs ✅
 
-**Header** (identical across all 103 store dials; all fields little-endian):
+**File layout** — the 36-byte header is repeated **byte-identically as a 36-byte footer** at EOF
+(✅ verified on 15 dials; a parser should reject a file where they differ):
 
 ```
-0x00  perDialId  u32 LE     [per-dial id/hash; NOT a content checksum — 4 "Default" dials share one]
-0x04  version    0x00000001 [constant]
-0x08  name       char[]     [NUL-terminated, e.g. "SlopeTime", "Metaball"]
-0x18  size_a     u32 LE     [= filesize − 36]   ✅ 100 % confirmed across 103 dials
-0x1c  size_b     u32 LE     [data-section length, < size_a]
-0x20  3× u32 LE  id/hash words [not a CRC]
-0x2c  name       (repeated on larger dials)
-~0x60 directory of layer records (61 xx 00 …) then the asset pool
+[36-byte header][scene TLV (§11.7)][asset pool][36-byte header again]
 ```
 
-There is **no blocking checksum** (CRC32/Adler32/byte-sum all fail to match) — repacking is not
-gated. Stub dials (~173 B, e.g. ids 273/274/277) are placeholders for faces baked into ROM: header +
+**Header** (identical structure across all 103 store dials; all fields little-endian):
+
+```
+0x00  crc_tree   u32 LE     [CRC32-raw of header[0x04:0x24] ‖ scene section]   ✅ see below
+0x04  magic      01 00 00 XX [XX = 0x00 or 0x02; both seen, meaning of 0x02 unknown]
+0x08  name       char[16]   [NUL-terminated, e.g. "SlopeTime", "Metaball"; may carry a
+                             non-zero tail after the NUL (@0x17) — round-trip it verbatim]
+0x18  size_a     u32 LE     [= filesize − 36 = footer offset = header+body]  ✅ 103 dials
+0x1c  size_b     u32 LE     [asset-pool length, exactly]                     ✅ 15 dials
+0x20  crc_assets u32 LE     [CRC32-raw of the asset pool]                    ✅ see below
+0x24  …                     [body starts here: the 0x20 scene container, §11.7]
+```
+
+> ⚠️ **Correction (supersedes "there is no blocking checksum").** Earlier revisions read `@0x00` as a
+> per-dial id/hash and `@0x20` as "3× u32 id/hash words \[not a CRC]", and stated that CRC32/Adler32/
+> byte-sum all fail to match. Both words **are** CRC32 — the earlier tests missed them because the
+> variant is non-standard, and because the "3 words at `0x20`" reading was conflating the single CRC
+> word with the first bytes of the scene container that starts at `0x24` (likewise "name repeated at
+> `0x2c`" is the scene's `0x86` name node, §11.11). Finding from
+> [freethinkel/fmc](https://github.com/freethinkel/fmc); re-verified here.
+
+**CRC32-raw** = reflected IEEE polynomial `0xEDB88320`, **`init = 0`**, and **no final XOR** — i.e.
+neither the `init=0xFFFFFFFF` nor the `^0xFFFFFFFF` of standard `crc32`. That is the whole reason
+off-the-shelf CRC32 never matched. Note the ordering dependency: `crc_assets` sits inside the range
+covered by `crc_tree`, so **write `@0x20` first, then compute `@0x00`**.
+
+```python
+def crc32_raw(data: bytes) -> int:          # tab = standard 0xEDB88320 reflected table
+    c = 0                                    # init 0, no final inversion
+    for b in data: c = tab[(c ^ b) & 0xFF] ^ (c >> 8)
+    return c & 0xFFFFFFFF
+
+crc_tree   = crc32_raw(f[0x04:0x24] + f[0x24:first_asset])
+crc_assets = crc32_raw(f[first_asset:len(f)-36])
+```
+
+Verified: **9/9** pristine store dials match on **both** words, and 6/6 of this repo's own templates
+match on `crc_tree`.
+
+> 🟡 **The firmware does not appear to enforce either CRC.** Every dial this repo has installed over
+> `9075` — including reskins produced by the same-footprint in-place edit path (§11.6), which mutates
+> asset payloads and X/Y bytes **without** recomputing the header — rendered fine on-device. So a
+> stale CRC is not what causes a `0a` reject (that is the container-window invariant, §11.7). Treat
+> the CRCs as **write-correct-anyway**: cheap, and the only known integrity field in the format.
+> Anything that rewrites the scene or the asset pool should recompute both words.
+
+Stub dials (~173 B, e.g. ids 273/274/277) are placeholders for faces baked into ROM: header +
 directory, no real assets.
 
 **Assets** — each is `dimsWord(u32 LE) ‖ len(u32 LE) ‖ LZ4(payload)`, where
@@ -642,14 +703,21 @@ Historic flat-record reading (superseded, kept for context):
   `count == 1`), and the partial wedge is that disc **clipped to a pie sector** (`frac = value/max`,
   clockwise from 12 o'clock) — verified pixel-for-pixel on 322 Glare 2 and confirmed `count==1` across
   **20 dials**. On-disk: `0x81` body = sub `0x01` (geometry `x@+0 y@+2 w@+4 h@+6`, inline `61 1 base`
-  = disc) + sub `0x5b` (`max` u16 `@+4`, =100 except 332=60). Implemented in wfweb (`blendSector`).
+  = disc) + sub `0x5b` (arc spec). Implemented in wfweb (`blendSector`).
+  ⚠️ The `0x5b` sub-record is **not** just "`max` u16 `@+4`" as previously documented — that read the
+  low half of a `max i32` and missed the **start/end sweep angles and stroke width** that sit right
+  after it. There is also a procedural sibling `0x80`/`0x5a` (with an explicit radius) that this
+  document never covered. Full record layout, and what the previous "clockwise from 12 o'clock"
+  assumption got wrong: **§11.15**.
 - **Data source id** — the element's `82` attr-block sits at `delim+3` (after the last `40 01 00`),
   and the **source id is a `u8` at `+0x14`** (also `relX@+0x07 s16`, `relY@+0x09 s16`, `anchor@+0x0C/0E`,
   `mode@+0x15`, `frame-count@+0x1A`). Anchor < 0 = align to the parent's edge. 🔎 The firmware resolves
-  the id through a 142-entry getter table at `0x101f371c` (each calls `ux2sys_get(type)`). Common ids
-  (§16): `0x07` hour, `0x0b` minute, `0x0f` second, `0x16` month, `0x18` weekday, `0x13` AM/PM,
-  `0x19` HR, `0x1b` battery %, `0x24` temperature, `0x36` steps, `0x70/71/72` hand angles,
-  `0x25–27` goal %. (This matches the `0x07:0x0b:0x0f` = HH:MM:SS group example below.)
+  the id through a 142-entry getter table at `0x101f371c` (each calls `ux2sys_get(type)`).
+  ⚠️ **Prefer reading the id as `meta[9]` of the struct (§11.11)** — a fixed field — over this forward
+  `82`-attr scan, which is the off-by-one source described in §11.8/§11.9. Full id table in §16; note
+  that the health/weather labels this section previously listed inline (`0x19` HR, `0x1b` battery,
+  `0x24` temperature, `0x36` steps) are **contested and probably wrong** — see the ⚠️ box in §16.
+  (The `0x07:0x0b:0x0f` = HH:MM:SS group example below is unaffected.)
 - **Group node** (`0x68`): nests its children inside its own TLV body (`0x60` = value/text,
   `0x30` = static); each `0x60` carries its source id at `data+16`. E.g. a group `0x07:0x0b:0x0f` =
   HH:MM:SS clock. TLV element parser = `0x100db55c` (jump table indexed by `tag−0x70`).
@@ -667,7 +735,9 @@ Historic flat-record reading (superseded, kept for context):
 
 ⚠️ Reskin/re-author pitfalls that cause a black screen or `0a`: leaving the **old asset `len`** (the
 watch reads past the block → overrun → black); **growing the file** (rejected at install); reusing an
-id **in place** instead of a fresh install.
+id **in place** instead of a fresh install; **reordering assets** without fixing the ref-tail block-size
+chain (§11.11). Not fatal today but write it correctly anyway: any change to the scene or the asset pool
+invalidates the two header **CRC32** words — recompute both (§11.4), `@0x20` before `@0x00`.
 
 ### 11.7 The `0x20` scene envelope — decoded & builder implemented ✅
 
@@ -723,12 +793,13 @@ dials) and closed four gaps:
   as an adjacent static between them, each an 11-glyph atlas (`61 0a 00`). ⚠️ When correcting X/Y
   from `−18/−16`, the **write offsets must move too**, or a re-export corrupts those bytes (breaks
   same-footprint → `0a`).
-- **Multi-variant complication slots: the active metric is NOT in the `.bin`.** ⚠️ A configurable
-  complication is authored as **N `0x68` group nodes stacked at the same `(x,y)`**, each bound to a
-  different source (275's two circles: `0x1e/0x6a/0x48/0x24/0x19` per slot — *option/style ids*, not
-  the shown metric); the two circles are byte-identical apart from their rect + an instance byte
-  (`0x79`/`0x7a`). Which metric shows (STEPS vs KCAL vs …) is **device RAM/config state**, so a
-  static preview cannot reproduce it from the file — best-effort only.
+- **Multi-variant complication slots** — ~~the active metric is NOT in the `.bin`~~ ⚠️ **this bullet
+  was wrong and is superseded by §11.13.** A configurable complication is authored as **N `0x68` group
+  nodes stacked at the same `(x,y)`**, each drawn only when a visibility condition matches — that much
+  was right. But the per-slot metric list (275's `0x1c/0x6a/0x48/0x24/0x19/0x76`) is **exactly the
+  metric list**, not "option/style ids"; the **default active index is a byte in the file**; and the
+  `0x79`/`0x7a` byte is not an "instance byte" but the **id the alternates are keyed on**
+  (`0x79 + slotIndex`). A static preview *can* reproduce the file's default. See **§11.13**.
 - **Edge-anchored inactive complications** (e.g. bpm text at `(446,0)`, seen on 275/302/325/365/375)
   are slots the firmware doesn't draw in the default view — their value can't even fit before the
   canvas edge. Treat as hidden in the preview.
@@ -793,6 +864,254 @@ and the preview clamps/pads to `digitCount` to mirror the firmware. So rebinding
 setting its digit count works for **any** field (e.g. date→temperature °F → Digits 3). Normal-mode
 oracle unchanged (0 regressions, 3 tiny improvements); roundtrip byte-exact on all 103 dials.
 (The earlier "Digits width"/`rectW` hypothesis was wrong — width is layout only, not the count.)
+
+### 11.11 Node inventory, the `struct` record, and the resource-reference tail ✅
+
+The scene (§11.7) is a clean nested TLV — `[tag u8][len u16 LE][body]`. Complete tag inventory as
+observed across the corpus:
+
+| tag | role | container? | body |
+|---|---|---|---|
+| `0x20` | scene root (body wrapper, not a drawable) | ✅ | children |
+| `0x21` | normal screen | ✅ | children |
+| `0x22` | AOD screen (§11.9) | ✅ | children |
+| `0x28` | **embedded catalog preview thumbnail** | ✅ | one `0x08` child |
+| `0x68` | group / auto-layout container | ✅ | `0x48` frame + children |
+| `0x30` | static image, or **pick-by-value** from N images | ✅ | `0x01` (+`0x02`) |
+| `0x60` | live numeric readout (digit strip) | ✅ | `0x01` + `0x40` (+`0x02`) |
+| `0x70` | rotating hand | ✅ | `0x01` + `0x05` pivot |
+| `0x80` | progress ring, **procedural** | ✅ | `0x01` + `0x5a` (§11.15) |
+| `0x81` | progress ring, **image-clipped** | ✅ | `0x01` + `0x5b` (§11.15) |
+| `0x85` | user-assignable complication slot | ✅ | `0x01` + `0x5f` (§11.13) |
+| `0x01` | **struct** — geometry + attributes (below) | — | `x,y,meta[14]` + ref tail |
+| `0x02` | visibility condition (§11.12) | — | condition list |
+| `0x05` | pivot — `flag u8, pivotX u16, pivotY u16` | — | 5 B |
+| `0x08` | pvStruct — `prefix[5]` + ref tail, no x/y (preview only) | — | — |
+| `0x40` | digit count / zero-pad flag (§11.10) | — | 1 B |
+| `0x48` | frame — `x,y,w,h,gap,align` auto-layout row/column | — | — |
+| `0x5a` / `0x5b` | arc spec for `0x80` / `0x81` (§11.15) | — | 19 B / 17 B |
+| `0x5f` | slot metric list for `0x85` (§11.13) | — | — |
+| `0x86` | display-name node, **always exactly 64 bytes**, NUL-terminated, not drawn | — | 64 B |
+
+✅ **This inventory is complete for the corpus.** Recursing only into the container tags above, the
+scene TLV of all 15 dials checked walks **exactly** to its declared root length with **zero** unknown
+tags — so a parser that handles this table handles the whole format, and an unknown tag means a
+misaligned read, not a new node type. (Beware: a walker that recurses into *every* node whose length
+happens to be ≥ 3 will descend into `struct`/`0x5b` bodies and hallucinate a long tail of one-off
+"tags" — the leaf bodies are not TLV.)
+
+> 💡 **Authoring shortcut:** `0x48`/`0x68` auto-layout can be **skipped entirely** — every widget can
+> be placed with absolute `x,y` directly at screen top level, which is what the from-scratch builder
+> (§11.7) does. Only needed to *read* existing dials. A `meta` width of `0x8000` marks a struct as an
+> auto-layout child of a frame (position comes from the parent, not from `x,y`).
+
+**`0x01` struct body** — a fixed 18-byte prefix followed by an optional resource-reference tail:
+
+```
++0x00  x        i16   [signed — can be negative, see §11.8]
++0x02  y        i16
++0x04  meta[14] ────────────────────────────────────────────────────
+       meta[0..1]   w u16       [0x8000 = auto-layout child of a frame]
+       meta[2..3]   h u16
+       meta[4..6]   unknown     [placeholder-looking (1,0,0)/(4,0,0); see §11.14]
+       meta[7]      accent-tint capability flag — 4 = tintable (§11.14)
+       meta[9]      DATA SOURCE ID   (§16)
+       meta[10]     sub / variant
+       meta[11..13] max u24 LE  [the metric's nominal full-scale value]
++0x12  ref tail  [61 …]  — absent on imageless rings (`0x80`/`0x81`, §11.15)
+```
+
+> ✅ This unifies the "magic offsets" of §11.5/§11.8/§11.9. Those sections locate fields *relative to
+> the `0x61` frame-table byte* — which is simply `+0x12` of this struct, so `−18`/`−16` = `x`/`y` and
+> **`−5` = `meta[9]`, the source id**. Same bytes, one clean layout. The forward-scanning `82`-attr
+> heuristic that was systematically off-by-one is not needed at all: read `meta[9]` of the struct.
+> A number field's `max` is likewise just `meta[11..13]` (e.g. day-of-month fields carry `max = 99`).
+
+**Ref tail** (`61`) — how a node points at its bitmaps:
+
+```
++0x00  0x61      [tail type]
++0x01  count u16 [1 = single image · 10/11 = digit atlas · N = pick-list / frame sheet]
++0x03  base  u32 [ABSOLUTE FILE OFFSET of the first asset block]
++0x07  count × u16  = the BLOCK SIZE (8 + payload len) of each referenced asset, in order
+```
+
+⚠️ Those trailing `u16`s were previously documented as "`count×id(u16)`" / glyph ids. They are
+**block sizes**: `base`, plus the running sum of them, walks the asset pool entry by entry (✅ verified
+exact for all 10 entries of a digit atlas). Two consequences:
+
+- **A node's referenced assets must be consecutive in the asset pool.** There is no random access —
+  the chain only moves forward. Plan the pool so each digit set (10), each pick-list (N) and each
+  frame sheet is one contiguous block. A writer that reorders assets without fixing the chain
+  produces a file that reads garbage (→ black screen).
+- Only the first `count−1` sizes are load-bearing; the last entry's value is never followed, so
+  files in the wild sometimes carry a stale value there. Don't treat a mismatch on the final
+  entry as a broken reference.
+
+**`0x28` preview** — the store/catalog thumbnail is **embedded in the `.bin` itself** (27 preview
+nodes across 15 dials), as a `0x08` pvStruct: a 5-byte prefix plus the same ref tail, with **no x/y**.
+Useful for building a gallery UI without shipping separate PNGs.
+
+### 11.12 Visibility conditions — tag `0x02` ✅
+
+A widget's `0x02` sibling makes it conditional. Without one, the widget always draws. Grammar:
+
+```
+count u8 , count × ( id u8 , op u8 , val u24 LE signed )     [5 bytes per entry]
+```
+
+`id` is a data-source id (§16) — including the **synthetic slot ids** of §11.13. Operators, with
+occurrence counts measured over 15 dials:
+
+| op | meaning | seen |
+|---|---|---|
+| `0x01` | draw if `value == val` | 99 |
+| `0x81` | same as `0x01` (bit `0x80` set — appears on mutually-exclusive variants) | 48 |
+| `0x02` | **hide** if `value == val` | 7 |
+| `0x03` | draw if `value == val`, where `val` is a **no-data marker** (e.g. HR `1000`) | 13 |
+| `0x05` | draw if `value >= val` | 58 |
+| `0x06` | draw if `value <= val` | 50 |
+| `0x04` | ⚠️ **unknown** — 15 occurrences, no confirmed semantics | 15 |
+
+Combination rule (as implemented by the reference renderer, mask `op & 0x7f`): the equality entries
+are **OR**-ed together, then the hide/`>=`/`<=` entries must **all** hold.
+
+This one mechanism covers most of the format's runtime variability, and explains structures that look
+like duplicated widgets:
+
+- **12h / 24h and metric / imperial layouts** — two widget sets stacked at the same spot, each bound to
+  `id 0x73` (the units flag) with `val` 0 or 1. Dial 275 has six such pairs (12 nodes).
+- **"No data" placeholders** — op `0x03` against a sentinel, e.g. `id 0x5f, val 1000` (dial 275, twice):
+  draw the em-dash art instead of a temperature when the metric is unavailable.
+- **Bucketed highlights** — a paired `0x05`/`0x06` range, e.g. Metaball's chain where each link lights
+  for its own 5-minute window.
+- **Complication-slot alternates** — bound to the synthetic slot ids of §11.13.
+
+### 11.13 Configurable complication slots — `0x85` + `0x5f` ✅ (supersedes §11.8)
+
+§11.8 concluded that a configurable complication's active metric is device RAM state and could not be
+recovered from the file. **That was wrong** — both the slot's metric menu and its default selection
+are in the `.bin`. Each `0x85` node carries a `0x5f` sibling:
+
+```
++0x00  slotIndex u8   [0-based position among sibling 0x85 nodes]
++0x01  count     u8   [how many metrics this slot offers]
++0x02  activeIdx u8   [index into the list below = the DEFAULT SHOWN METRIC]
++0x03  count × u8     [the metric ids themselves (§16)]           … NUL padding
+```
+
+The alternates that actually get drawn are ordinary `0x68` groups elsewhere in the tree, each gated by
+a `0x02` condition (§11.12) on the **synthetic id `0x79 + slotIndex`** — so slot 0's variants bind on
+`0x79`, slot 1's on `0x7a`, and so on. To render a slot: read `activeIdx`, then draw the variant whose
+condition matches that index.
+
+Measured on real dials:
+
+| dial | slot | count | activeIdx | metric ids | → active |
+|---|---|---|---|---|---|
+| 275 SlopeTime | 0 | 6 | 0 | `1c 6a 48 24 19 76` | `0x1c` calories |
+| 275 SlopeTime | 1 | 6 | **4** | `1c 6a 48 24 19 76` | `0x19` steps |
+| 368 Function | 0 | 8 | 0 | `5f 1c 19 48 24 76 1a 8b` | `0x5f` temperature |
+| 368 Function | 1 | 8 | **6** | `5f 1c 19 48 24 76 1a 8b` | `0x1a` heart rate |
+| 273 Activity Mood | 0 | 4 | 0 | `1c 24 48 6a` | `0x1c` calories |
+| 304 Elaborate 2 | 0/1 | 4 | 0 | `1c 48 6a 24` / `24 1c 6a 48` | `0x1c` / `0x24` |
+
+Dial 275's two 6-metric slots account for 12 of its 26 `0x02` nodes, exactly as predicted:
+`01 79 81 0X 00 00` and `01 7a 81 0X 00 00` for `X = 0..5` — six alternates keyed on `0x79` (slot 0)
+and six on `0x7a` (slot 1). (The `0x79`/`0x7a` bytes §11.8 called an "instance byte" are these bind
+ids.) Its remaining 14 are unrelated: 12 on `0x73` (the 24h/metric-units flag, `val` 0 or 1 — six
+widget pairs swapping between 12h and 24h layouts) and 2 on `0x5f` with op `0x03` and `val = 1000`,
+the temperature no-data placeholder.
+
+Still genuinely device state: whatever the **user** later picks in the companion app overrides
+`activeIdx` at runtime, so a preview reproduces the *file default*, not necessarily what a given
+watch shows. `imgs[0]` of a `0x85` node is a "tap to configure" placeholder the firmware draws only
+in its own edit mode — skip it when previewing normal time-telling.
+
+### 11.14 Accent colour — the `meta[7] == 4` capability flag ✅
+
+Some dials let the user pick an accent colour on-device, and the firmware substitutes it into the
+widget's bitmaps at render time. The switch is a **single byte**: `meta[7]` of the struct (§11.11) —
+i.e. byte `+0x0B` of the `0x01` body — **equal to `4`** marks that widget's resource(s) as tintable.
+
+- It is a **per-widget capability flag**, not a colour. Recolour **every non-transparent pixel** of a
+  flagged resource (leave alpha alone); there is no per-pixel colour test involved.
+- Prevalence: **37 of 499** structs and **8 of 15** dials measured here; the fmc corpus reports
+  **56 of 100** dials with at least one flagged widget.
+- 🛑 **Never bake an accent colour into the exported bytes.** The substitution is live on the watch;
+  a shipped `.bin` must keep its original pixels or you permanently lose the user's choice. Apply the
+  tint only in the preview/canvas path.
+
+> ⚠️ **Do not "improve" this into a colour heuristic — that path is a proven dead end** (documented by
+> fmc after doing it the hard way). The intuitive theory is that flagged pixels are baked in some
+> recognisable placeholder colour the firmware swaps out. It cannot work: dial 348 Tumbler's tintable
+> ring and dials 282 Radar Sweep / 291 Vertical's ordinary **non**-tintable digit strips bake the
+> *exact same* `(255,72,32)` RGB (checked exhaustively, every pixel); and dials 305 Dots (hour hand)
+> and 306 Large Number (digits) are tintable while baked **plain white**, so a colour test would miss
+> them entirely. Successive refinements (1 → 4 reference colours, plus a widget-role allowlist) all
+> failed. Read the flag.
+>
+> Cross-checked against the real device / companion app on 7 dials, chosen to stress both directions —
+> 349 Theatre, 376 Digits time, 305 Dots, 306 Large Number, 304 Elaborate 2 all offer the accent
+> setting and all have `meta[7]==4` widgets; 316 Trailing (reddish hand, no setting), 312 Disc and
+> 295 Vortex offer none and have zero flagged widgets.
+
+`meta[4..6]` sits right next to the flag and looks like it might encode a colour on some structs
+(a real-looking RGB with tail `f1=1,f2=255`, vs. the flagged structs' placeholder `(1,0,0)`/`(4,0,0)`).
+It does **not** correlate with accent capability. ⚠️ Unresolved; ignore it.
+
+### 11.15 Progress rings — `0x80`/`0x5a` (procedural) and `0x81`/`0x5b` (image-clipped) ✅
+
+Both ring flavours pair a **short struct** (`x`, `y`, `meta` with the source id — usually with **no
+ref tail at all**) with an arc-spec sibling. §11.5 documented only "`0x5b`: `max` u16 `@+4`", which is
+the low half of a `max i32` and misses the sweep geometry. Full record:
+
+```
++0x00  min    i32 LE   [always 0 in the corpus]
++0x04  max    i32 LE   [100 in the corpus, except dial 332 = 60]
++0x08  start  i16 LE   [sweep start, units of 0.1° — SIGNED]
++0x0a  end    i16 LE   [sweep end,   units of 0.1° — SIGNED]
++0x0c  width  u16 LE   [stroke width in px]
++0x0e  radius u16 LE   [0x5a ONLY — 0x81 takes its radius from the clipped image]
++0x0e / +0x10  trailer `01 00 kk`  ⚠️ unresolved (see below)
+```
+
+Pairing is rigid: `0x80` always carries exactly `0x01` + a **19-byte** `0x5a`, `0x81` always exactly
+`0x01` + a **17-byte** `0x5b` (✅ 26/26 rings across 15 dials). ⚠️ But the **image-clipped `0x81`
+dominates** — 25 of those 26. The procedural `0x80`/`0x5a` variant appeared **once** (dial 273), so its
+`radius` field and 19-byte layout rest on a single sample; treat with suspicion until seen again.
+
+`frac = clamp((value − min) / (max − min), 0, 1)`, and the filled arc runs from `start` toward `end`.
+Angle zero is at **3 o'clock**, positive clockwise. Measured examples:
+
+| dial | tag | min..max | start → end | width | radius |
+|---|---|---|---|---|---|
+| 273 Activity Mood | `0x5a` | 0..100 | **−102.8° → 102.8°** | 42 | 222 |
+| 273 Activity Mood | `0x5b` | 0..100 | 270.0° → 90.0° | 80 | (image) |
+| 276 Dichotomy | `0x5b` | 0..100 | 60.0° → −120.0° | 23 | (image) |
+| 304 Elaborate 2 | `0x5b` | 0..100 | −2.0° → 358.0° | 24 / 80 | (image) |
+| 366 Combo | `0x5b` | 0..100 | 0.0° → 270.0° | 18 | (image) |
+| 368 Function | `0x5b` | 0..100 | 0.0° → 360.0° | 20 | (image) |
+
+> ⚠️ **This corrects the "clockwise from 12 o'clock" assumption** in §11.5. That is only the special
+> case `start = 0, end = 3600` (a full sweep, where the convention is unobservable). Real dials use
+> **partial gauges** (273's ±102.8° fan, 366's 270° three-quarter ring) and **negative sweeps**
+> (276's 60° → −120°), so a renderer that always sweeps a full circle from the top draws those wrong.
+> 🟡 The exact angle-zero convention and direction rule come from fmc's renderer, cross-checked
+> against these on-disk values — not independently verified pixel-for-pixel on-device by this repo.
+> Note `frac = value/max` and the `0x81` sector-clip result in §11.5 **were** validated (dial 322).
+
+⚠️ **Unresolved: the 3-byte trailer `01 00 kk`.** `kk` takes plausible-looking values (104, 152, 216,
+232, 248) and the obvious hypothesis is a radius — **tested and refuted**: dial 366 uses `kk = 104`
+for both an 82×82 and a 166×166 ring, and dial 273 uses `kk = 232` for both a 440×440 and a 284×284
+ring. Not a radius, not a diameter. Possibly opacity/style. Round-trip it verbatim.
+
+🟡 **Reported gotcha, unverified here:** in fmc's renderer, a `0x60` number whose source id equals the
+id of **any** ring on the same screen renders `round(frac × 100)` instead of the raw value — so a
+heart-rate number next to a heart-rate ring shows `36` instead of `71 bpm`. Their documented
+workaround is to put the ring and the number on two **alias** ids of the same metric (steps
+`0x19`/`0x26`/`0x49`, calories `0x1c`/`0x1e`/`0x48`). Whether this is firmware behaviour or specific
+to their renderer is **not established** — worth a live check before designing around it.
 
 ---
 
@@ -859,15 +1178,69 @@ phone/BLE** — they need a firmware mod, which is out of scope here:
 
 ---
 
-## 16. Complication getter table (🔎 firmware-internal reference)
+## 16. Data-source / complication getter ids
 
-Not needed to build a BLE client — included for completeness. The firmware's dial renderer binds each
-complication slot to a numeric **getter id** (142-entry dispatch table). Selected ids:
-`0x07` hour, `0x0a` combined clock angle, `0x0b` minute, `0x0f` second, `0x18` day-of-week,
-`0x19` heart rate, `0x1b` battery %, `0x24` temperature, `0x36` steps,
-`0x70/0x71/0x72` hour/minute/second hand angle, `0x25–0x27` goal %. Ring/arc complications index a
-pre-rendered **frame sheet** (e.g. 50 % = frame 50 of 100), not a per-pixel arc — the frames are baked
-into the `.bin` you send (§11.5), so no external RES pack is needed.
+Not needed to build a BLE client, but **essential to author or render a dial**: this is the value of
+`meta[9]` (§11.11) that binds a widget to live data, the `id` of a visibility condition (§11.12), and
+the entries of a slot's metric menu (§11.13). The firmware resolves it through a **142-entry getter
+dispatch table** at `0x101f371c`, each entry calling `ux2sys_get(type)` (🔎 firmware RE).
+
+### Time / date — ✅ well established
+
+| id | meaning | id | meaning |
+|---|---|---|---|
+| `0x01` | hour (12/24h per device setting) | `0x0f`, `0x12` | second (smooth) |
+| `0x04` | hour (24h) | `0x10`, `0x11` | second tens / units |
+| `0x07` | hour (forced 24h) | `0x71`, `0x72` | second (ticking / hand angle) |
+| `0x02`, `0x03` | hour-12h tens / units | `0x13` | AM/PM flag (0 = AM, 1 = PM) |
+| `0x05`, `0x06`, `0x08`, `0x09` | hour tens / units | `0x15`, `0x16` | month |
+| `0x0a`, `0x70` | hour hand angle | `0x17` | day of month |
+| `0x0b` | minute | `0x18` | weekday (0 = Monday ⚠️) |
+| `0x0c`, `0x0d` | minute tens / units | `0x0e`, `0x71` | minute hand angle |
+
+Tens/units ids draw a **single digit** — a widget bound to one of them renders one glyph, not the whole
+value (dial 284 Square). Hand-angle ids (§11.5) are `0x0a`/`0x70` hour = `h·30° + m·0.5°`,
+`0x0e`/`0x71` minute = `m·6° + s·0.1°`, `0x12`/`0x72` second = `s·6°` (✅ confirmed by disassembling
+the getters, RTC fallback 10:10:30).
+
+### Health / sensors / weather — ⚠️ contested, read the evidence column
+
+| id | meaning (best current reading) | evidence |
+|---|---|---|
+| `0x19` | **steps** | in 368's slot menu alongside `0x1a`; matches this repo's `parse.ts` |
+| `0x1a` | **heart rate** | in 368's slot menu alongside `0x5f` and `0x19` |
+| `0x1c` | calories | slot menu, flame icon in the companion app |
+| `0x1e` | calories (alias) | corpus |
+| `0x22` / `0x23` | distance km / mi (integer part) | corpus |
+| `0x74` / `0x75` | distance km / mi (fractional part) | corpus |
+| `0x76` | distance (slot form) | slot menu, road icon |
+| `0x24` | **battery %** | slot menu, lightning icon |
+| `0x30` | battery % | corpus |
+| `0x36` / `0x5f` | temperature | `0x5f` = slot menu, cloud-sun icon; 361 TempoG binds a plain number |
+| `0x48` | stands (hours stood) | slot menu, standing-figure icon |
+| `0x8b` | AQI | slot menu |
+| `0x73` | 24h / metric-units flag | corpus |
+| `0x25`–`0x27`, `0x49`, `0x6c`, `0x6f` | goal % / slot aliases of steps & calories | corpus |
+| `0x6a` | ⚠️ unidentified slot metric | appears in 4 slot menus |
+| `0x79 + slotIndex` | **synthetic** — not a metric; the slot-selection id (§11.13) | ✅ §11.13 |
+
+> ⚠️ **Three tables in this repo disagreed; this one is the reconciliation.** Earlier revisions of §16
+> and §11.5 read `0x19` as heart rate, `0x1b` as battery, `0x24` as temperature and `0x36` as steps —
+> and `wfweb/src/codec/mock.ts` still encodes that reading, while `wfweb/src/codec/parse.ts` encodes a
+> different one (`0x19` steps, `0x24` goal %, `0x48` stands, `0x1a` weather). The table above follows
+> the better-evidenced reading (labels calibrated by fmc against the companion app's own widget-slot
+> menu icons, see §Sources). **The code has not been changed yet — `mock.ts` and `parse.ts` are still
+> inconsistent with each other and with this table.** Treat health-id labels as ⚠️ until someone binds
+> a field to each id and reads the watch.
+>
+> The strongest single piece of evidence is **dial 368 Function's slot menu** (§11.13), which offers
+> `0x5f 0x1c 0x19 0x48 0x24 0x76 0x1a 0x8b` as **eight distinct user-selectable metrics** in one menu.
+> Whatever the labels are, no two of those eight can be the same metric — which rules out
+> `0x19` = `0x1a` = heart rate and `0x24` = `0x5f` = temperature simultaneously.
+
+Ring/arc complications with a **frame sheet** index a pre-rendered frame (e.g. 50 % = frame 50 of 100)
+baked into the `.bin` you send (§11.5), so no external RES pack is needed; imageless rings are drawn
+from the arc spec instead (§11.15).
 
 ---
 
@@ -907,7 +1280,46 @@ cards. `sportId` is `0` except on Sport cards (87–91). Ids `64` and `95` don't
 
 ---
 
-*Byte layouts above were reconstructed from the firmware (1.0.0.73), the official APK (3.5.7), and
+## Appendix A. Stock dial catalogue (id → name)
+
+§11 refers to dials by numeric id throughout (275 SlopeTime, 322 Glare 2, 357 Silhouette, …). Ids
+`273`–`376` are the store/stock faces; the id is what `DIAL_COMMAND (9055/a055)` reports as active and
+what `9075` takes as `old_id` (§11.4). 100 of the 103 known ids are named below; the remaining ones are
+ROM stubs (§11.4). Names and grouping as shown by the official companion app.
+
+- **Default** (6) — `273` Activity Mood · `274` Sun Circle · `275` SlopeTime · `276` Dichotomy · `277` Prismatic Time · `280` Multifunction
+- **Analog** (34) — `286` Sundial · `287` Simple Dial · `292` City · `294` Sudoku · `305` Dots · `306` Large Number · `309` Gradient · `310` Glare · `311` Bold · `313` Classical · `314` Fragment · `315` Infinite · `316` Trailing · `322` Glare 2 · `326` Chrono Master · `327` Digit Max · `328` Coherent · `329` Wheel · `330` Zenith · `331` Intersection · `335` Time Phase · `336` Energetic · `338` Chronos · `341` Dual View · `346` Time Windmill · `347` Large Panel · `349` Theatre · `352` Elegant Sweep · `360` Explorer · `364` SportPulse · `370` Hemisphere · `371` ActiveTrio · `372` Time Wheel · `373` Traditional Pointer
+- **Digital** (41) — `281` Metaball · `282` Radar Sweep · `283` Radio · `285` Widgets · `288` Type · `289` Rotate · `290` Gradual · `291` Vertical · `293` Stairs · `296` Ladder · `297` Ray · `298` Eclectic · `299` Echo · `300` Mono Dial · `301` Orbit · `302` Calendar · `303` Space · `307` Sprung · `308` Sundial 2 · `319` One Line · `320` Orienteer · `321` Revolution · `323` Dash · `324` Finesse · `325` Metric · `333` Circularity · `334` Globe of Time · `337` Time Finder · `339` Suprematism · `340` Sport Mode · `345` Time Dot · `350` Timeline · `351` Cyclopes · `353` Dual phase · `357` Silhouette · `359` Ring data · `361` TempoG · `362` Steady · `365` Elegance · `369` Solar System · `376` Digits time
+- **Multifunction** (10) — `304` Elaborate 2 · `344` InfoMeter · `348` Tumbler · `354` Dual · `363` Vintage · `366` Combo · `367` Complex Figure · `368` Function · `374` Cirquary · `375` InfoHub
+- **Creative** (8) — `284` Square · `312` Disc · `317` Disc 2 · `318` Dominos · `332` Flux · `342` Perfect Match · `343` Progress Day · `358` Asteroid
+- **Diwali** (1) — `295` Vortex
+
+---
+
+## Sources
+
+Byte layouts above were reconstructed from the firmware (1.0.0.73), the official APK (3.5.7), and
 decrypted live captures against a real device. The reference implementation for this project lives in
-`core-rust/src/{commands,frame,crypto,health,session}.rs` (Rust) and the `cmftool/` Python tools
-(`pair.py`, `session.py`, `wf_codec.py`, `upload_custom.py`, …).*
+`core-rust/src/{commands,frame,crypto,health,session}.rs` (Rust), the `wfweb/` TypeScript editor, and
+the `cmftool/` Python tools (`pair.py`, `session.py`, `wf_codec.py`, `upload_custom.py`, …).
+
+**Independent work incorporated here.** [freethinkel/fmc](https://github.com/freethinkel/fmc) — a
+SvelteKit watchface editor + marketplace for the same watch — independently reverse-engineered the
+`.bin` format from a ~100-face corpus and reached several results this document was missing or had
+wrong. Their `docs/cmf-protocol.md`, `src/lib/modules/editor/lib/{wf,render}.ts` and
+`src/lib/modules/device/lib/ble.ts` are worth reading directly. Findings adopted, each re-verified
+against dial bytes before being written up here:
+
+| Finding | Where | Status here |
+|---|---|---|
+| Both header words are CRC32 (non-standard variant) | §11.4 | ✅ re-verified 9/9 dials; **corrects** "no blocking checksum" |
+| Visibility conditions, tag `0x02` | §11.12 | ✅ re-verified; was undocumented |
+| Slot metric list + default `activeIdx`, `0x79 + slotIndex` | §11.13 | ✅ re-verified on 275/368/273/304; **supersedes** §11.8 |
+| Accent-tint capability flag `meta[7] == 4` | §11.14 | ✅ prevalence re-verified; was undocumented |
+| Full arc spec (sweep angles, width, radius) | §11.15 | ✅ re-verified; **corrects** "`max` u16 `@+4`" |
+| Ref-tail `u16`s are block sizes, not glyph ids | §11.11 | ✅ re-verified exact on a 10-glyph atlas |
+| 36-byte footer; magic byte variant `0x02`; `0x86` = 64 B; `0x28` embedded preview | §11.4, §11.11 | ✅ re-verified |
+| Health/weather id labels calibrated against the companion app's slot menu | §16 | ⚠️ adopted as best reading; conflicts flagged |
+| Shell service UUID is `77d4e67c-…`, and Web Bluetooth `optionalServices` scoping | §1 | ⚠️ single-unit report, not re-verified here |
+| Number-sharing-id-with-ring renders a percentage | §11.15 | 🟡 reported, **not** verified here |
+| Stock dial id → name catalogue | Appendix A | ✅ adopted as-is |
